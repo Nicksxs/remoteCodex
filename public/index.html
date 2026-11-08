@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="theme-color" content="#0c0f0b">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Remote Codex">
+    <title>Remote Codex</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <button id="sessionsButton" class="icon-button" type="button" aria-label="打开会话列表"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg></button>
+        <button id="threadHeading" class="thread-heading" type="button" aria-label="打开会话列表">
+          <span id="threadTitle">Remote Codex</span>
+          <span id="threadMeta"><i id="statusDot" class="status-dot"></i><span id="statusText">正在连接</span></span>
+        </button>
+        <button id="newThreadButton" class="icon-button accent" type="button" aria-label="新建会话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      </header>
+
+      <main id="main" class="main">
+        <section id="welcome" class="home-screen">
+          <div class="home-hero">
+            <p class="eyebrow">REMOTE CODEX</p>
+            <h1>电脑在工作，<br>你不必守在电脑前。</h1>
+            <p>从手机发任务、看进度、处理审批。代码和登录凭据仍留在你的电脑上。</p>
+          </div>
+          <section class="host-card" aria-label="电脑连接状态">
+            <div class="host-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H4zM9 20h6M12 16v4"/></svg></div>
+            <div class="host-card-copy"><strong>本机 Codex</strong><span id="homeCwd">正在读取工作目录…</span></div>
+            <span id="homeStatus" class="connection-pill">连接中</span>
+          </section>
+          <button id="welcomeStartButton" class="primary-button start-button" type="button"><span>新建会话</span><span aria-hidden="true">＋</span></button>
+          <section class="recent-section" aria-labelledby="recentTitle">
+            <div class="section-heading"><h2 id="recentTitle">最近会话</h2><button id="viewAllThreadsButton" class="text-button" type="button">查看全部</button></div>
+            <div id="homeThreadList" class="thread-list home-thread-list"></div>
+          </section>
+        </section>
+
+        <section id="conversation" class="conversation hidden" aria-live="polite">
+          <div id="messageList" class="message-list"></div>
+          <div id="workingIndicator" class="working hidden"><i></i><span>Codex 正在工作</span></div>
+        </section>
+      </main>
+
+      <footer id="composer" class="composer hidden">
+        <div class="composer-box">
+          <textarea id="promptInput" rows="1" maxlength="30000" enterkeyhint="send" placeholder="给 Codex 一个任务…" aria-label="消息"></textarea>
+          <div class="composer-actions">
+            <button id="stopButton" class="stop-button hidden" type="button" aria-label="停止任务"><span></span>停止</button>
+            <span id="composerHint">发送消息</span>
+            <button id="sendButton" class="send-button" type="button" aria-label="发送消息"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7M12 5v14"/></svg></button>
+          </div>
+        </div>
+      </footer>
+    </div>
+
+    <div id="scrim" class="scrim hidden"></div>
+
+    <aside id="sessionDrawer" class="page-panel" aria-label="会话列表" aria-hidden="true" inert>
+      <header class="panel-header">
+        <button id="closeDrawerButton" class="icon-button" type="button" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
+        <div><h2>会话</h2><span id="sessionCount">0 个会话</span></div>
+        <button id="drawerNewButton" class="icon-button accent" type="button" aria-label="新建会话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      </header>
+      <div id="threadList" class="thread-list panel-thread-list"></div>
+      <footer class="panel-footer">
+        <div class="host-chip"><i id="drawerStatusDot" class="status-dot"></i><div><strong id="hostName">本机 Codex</strong><small id="hostCwd">—</small></div></div>
+        <button id="disconnectButton" class="text-button danger-text" type="button">断开</button>
+      </footer>
+    </aside>
+
+    <section id="newThreadSheet" class="form-page hidden" role="dialog" aria-modal="true" aria-labelledby="newThreadTitle">
+      <header class="form-page-header">
+        <button class="icon-button sheet-close" type="button" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
+        <div><h2 id="newThreadTitle">新建会话</h2><span>选择电脑上的项目与权限</span></div>
+        <span class="header-spacer"></span>
+      </header>
+      <div class="form-scroll">
+        <section class="form-section">
+          <label class="field-label" for="cwdInput">工作目录</label>
+          <input id="cwdInput" class="field" type="text" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="/path/to/project">
+          <p class="field-help">路径位于运行 Remote Codex 的电脑上。</p>
+        </section>
+        <section class="form-section">
+          <h3>模型设置</h3>
+          <label class="field-label" for="modelSelect">模型</label>
+          <select id="modelSelect" class="field"><option value="">跟随 Codex 默认</option></select>
+          <label class="field-label" for="effortSelect">思考深度</label>
+          <select id="effortSelect" class="field"><option value="">默认</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">很高</option></select>
+        </section>
+        <section class="form-section">
+          <h3>权限</h3>
+          <label class="field-label" for="approvalSelect">审批策略</label>
+          <select id="approvalSelect" class="field"><option value="on-request">按需确认（推荐）</option><option value="untrusted">仅不可信命令确认</option><option value="never">不询问</option></select>
+          <label class="field-label" for="sandboxSelect">文件权限</label>
+          <select id="sandboxSelect" class="field"><option value="workspace-write">可编辑工作目录（推荐）</option><option value="read-only">只读</option><option value="danger-full-access">完全访问（高风险）</option></select>
+          <p id="unsafeWarning" class="warning hidden">完全访问允许 Codex 修改工作目录以外的文件，请只在理解风险时使用。</p>
+        </section>
+      </div>
+      <footer class="form-page-footer"><button id="createThreadButton" class="primary-button full" type="button">创建会话</button></footer>
+    </section>
+
+    <section id="approvalSheet" class="approval-sheet hidden" role="dialog" aria-modal="true" aria-label="Codex 审批请求">
+      <div class="sheet-handle"></div><div id="approvalContent"></div>
+    </section>
+
+    <section id="pairingSheet" class="pairing hidden" role="dialog" aria-modal="true" aria-labelledby="pairingTitle">
+      <div class="pairing-card">
+        <div class="pairing-mark" aria-hidden="true">C</div>
+        <p class="eyebrow">SECURE PAIRING</p>
+        <h2 id="pairingTitle">连接你的电脑</h2>
+        <p>扫描终端二维码时会自动连接；也可以粘贴终端中显示的配对令牌。</p>
+        <label class="field-label" for="tokenInput">配对令牌</label>
+        <input id="tokenInput" class="field" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="粘贴令牌">
+        <p id="pairingError" class="form-error hidden"></p>
+        <button id="pairButton" class="primary-button full" type="button">连接</button>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

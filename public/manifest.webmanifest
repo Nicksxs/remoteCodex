@@ -1,0 +1,19 @@
+{
+  "name": "Remote Codex",
+  "short_name": "Codex",
+  "description": "在手机上远程控制电脑中的 Codex 会话",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0f0b",
+  "theme_color": "#0c0f0b",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
