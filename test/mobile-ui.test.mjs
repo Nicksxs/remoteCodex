@@ -21,4 +21,6 @@ test("mobile shell uses full-screen navigation and keyboard-aware sizing", async
   assert.match(css, /\.send-button\s*\{[\s\S]*width:\s*44px;[\s\S]*height:\s*44px;/);
   assert.match(app, /window\.visualViewport/);
   assert.match(app, /syncViewportHeight/);
+  assert.match(app, /eventTransport === "poll"/);
+  assert.match(app, /api\/events\/poll\?after=/);
 });

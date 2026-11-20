@@ -15,6 +15,7 @@ const state = {
   token: "", connected: false, codexReady: false, transportSecure: true, cwd: "", threads: [], models: [], current: null,
   items: new Map(), itemOrder: [], pending: new Map(), activeTurnId: null, busy: false,
   selectedEffort: "", eventAbort: null, reconnectTimer: null,
+  eventTransport: "sse", eventCursor: 0, eventSession: null,
 };
 
 bindUi();
@@ -83,6 +84,11 @@ async function connect() {
     state.connected = true;
     state.codexReady = status.codexReady;
     state.transportSecure = status.transportSecure;
+    state.eventTransport = status.eventTransport || "sse";
+    if (state.eventSession !== status.eventSession) {
+      state.eventSession = status.eventSession;
+      state.eventCursor = status.eventCursor || 0;
+    }
     state.cwd = status.cwd || "";
     els.cwd.value ||= state.cwd;
     els.hostCwd.textContent = state.cwd || "未设置工作目录";
@@ -137,7 +143,8 @@ function connectEvents() {
   clearTimeout(state.reconnectTimer);
   state.eventAbort?.abort();
   state.eventAbort = new AbortController();
-  streamEvents(state.eventAbort.signal).catch((error) => {
+  const receive = state.eventTransport === "poll" ? pollEvents : streamEvents;
+  receive(state.eventAbort.signal).catch((error) => {
     if (error.name === "AbortError" || !state.token) return;
     state.connected = false;
     updateConnectionUi();
@@ -164,6 +171,25 @@ async function streamEvents(signal) {
       const data = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
       if (data) handleBridgeEvent(JSON.parse(data));
     }
+  }
+}
+
+async function pollEvents(signal) {
+  while (!signal.aborted) {
+    const response = await fetch(`/api/events/poll?after=${state.eventCursor}`, {
+      headers: authHeaders(),
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) throw await apiError(response);
+    const payload = await response.json();
+    state.connected = true;
+    updateConnectionUi();
+    for (const event of payload.data || []) {
+      state.eventCursor = Math.max(state.eventCursor, event.seq || 0);
+      handleBridgeEvent(event);
+    }
+    state.eventCursor = Math.max(state.eventCursor, payload.cursor || 0);
   }
 }
 

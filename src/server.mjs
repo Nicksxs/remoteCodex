@@ -8,13 +8,15 @@ import { networkInterfaces } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServer } from "./codex-client.mjs";
+import { EventBuffer } from "./event-buffer.mjs";
+import { startQuickTunnel } from "./remote-tunnel.mjs";
 import { bearerToken, safeJson, tokenMatches } from "./security.mjs";
 import { terminalQr } from "./terminal-qr.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = resolve(root, "public");
 const args = parseArgs(process.argv.slice(2));
-const host = args.lan ? "0.0.0.0" : (args.host || "127.0.0.1");
+const host = args.remote ? "127.0.0.1" : (args.lan ? "0.0.0.0" : (args.host || "127.0.0.1"));
 const port = Number(args.port || process.env.REMOTE_CODEX_PORT || 4173);
 const token = args.token || process.env.REMOTE_CODEX_TOKEN || randomBytes(24).toString("base64url");
 const codexCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
@@ -37,12 +39,14 @@ const allowedMethods = new Set([
 
 const codex = new CodexAppServer({ command: codexCommand, cwd: codexCwd });
 const eventClients = new Set();
+const events = new EventBuffer();
+const eventSession = randomBytes(8).toString("hex");
 const pendingServerRequests = new Map();
-let sequence = 0;
 let lastError = null;
+let remoteTunnel = null;
 
 function publish(kind, message) {
-  const event = { seq: ++sequence, at: Date.now(), kind, message };
+  const event = events.publish(kind, message);
   const payload = `id: ${event.seq}\ndata: ${safeJson(event)}\n\n`;
   for (const response of eventClients) response.write(payload);
 }
@@ -78,11 +82,15 @@ const requestHandler = async (request, response) => {
           codexReady: codex.ready,
           error: lastError,
           cwd: codexCwd,
-          transportSecure: Boolean(tls) || !args.lan,
+          transportSecure: Boolean(tls) || Boolean(args.remote) || !args.lan,
+          eventTransport: args.remote ? "poll" : "sse",
+          eventCursor: events.sequence,
+          eventSession,
           version: "0.1.0",
         });
       }
       if (request.method === "GET" && url.pathname === "/api/events") return openEventStream(request, response);
+      if (request.method === "GET" && url.pathname === "/api/events/poll") return pollEvents(url, response);
       if (request.method === "GET" && url.pathname === "/api/pending") {
         return sendJson(response, 200, { data: [...pendingServerRequests.values()] });
       }
@@ -130,6 +138,8 @@ async function shutdown(signal) {
   shuttingDown = true;
   process.stdout.write(`\n收到 ${signal}，正在停止 Remote Codex…\n`);
   clearInterval(heartbeat);
+  await remoteTunnel?.stop();
+  events.close();
   for (const response of eventClients) response.end();
   await new Promise((resolveClose) => server.close(resolveClose));
   await codex.stop();
@@ -143,9 +153,23 @@ try {
     server.once("error", rejectListen);
     server.listen(port, host, resolveListen);
   });
-  printStartup();
+  if (args.remote) {
+    const origin = `${tls ? "https" : "http"}://127.0.0.1:${port}`;
+    remoteTunnel = await startQuickTunnel({
+      origin,
+      allowedMail: args["allowed-mail"] || [],
+      onLog: (line) => { if (args.verbose) process.stderr.write(`[cloudflared] ${line}`); },
+      onExit: (error) => {
+        process.stderr.write(`${error.message}\n`);
+        process.exitCode = 1;
+        shutdown("远程隧道断开").catch((shutdownError) => process.stderr.write(`${shutdownError.stack || shutdownError}\n`));
+      },
+    });
+  }
+  printStartup(remoteTunnel?.url);
 } catch (error) {
   process.stderr.write(`Remote Codex 启动失败：${error.message}\n`);
+  if (server.listening) await new Promise((resolveClose) => server.close(resolveClose));
   await codex.stop();
   process.exitCode = 1;
 }
@@ -157,9 +181,22 @@ function openEventStream(request, response) {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  response.write(`retry: 1500\ndata: ${safeJson({ seq: sequence, at: Date.now(), kind: "connected", message: { codexReady: codex.ready } })}\n\n`);
+  response.write(`retry: 1500\ndata: ${safeJson({ seq: events.sequence, at: Date.now(), kind: "connected", message: { codexReady: codex.ready } })}\n\n`);
   eventClients.add(response);
   request.on("close", () => eventClients.delete(response));
+}
+
+async function pollEvents(url, response) {
+  const rawCursor = Number(url.searchParams.get("after") || 0);
+  if (!Number.isSafeInteger(rawCursor) || rawCursor < 0) return sendJson(response, 400, { error: "事件游标无效" });
+  const abort = new AbortController();
+  response.once("close", () => abort.abort());
+  try {
+    const data = await events.wait(rawCursor, { signal: abort.signal });
+    if (!response.destroyed) sendJson(response, 200, { data, cursor: events.sequence });
+  } catch (error) {
+    if (error.name !== "AbortError") throw error;
+  }
 }
 
 async function serveStatic(pathname, request, response) {
@@ -225,10 +262,12 @@ function parseArgs(values) {
   const parsed = {};
   for (let index = 0; index < values.length; index += 1) {
     const arg = values[index];
-    if (arg === "--lan" || arg === "--verbose" || arg === "--no-qr") parsed[arg.slice(2)] = true;
+    if (arg === "--lan" || arg === "--remote" || arg === "--verbose" || arg === "--no-qr") parsed[arg.slice(2)] = true;
     else if (arg.startsWith("--")) {
       const [key, inline] = arg.slice(2).split("=", 2);
-      parsed[key] = inline ?? values[++index];
+      const value = inline ?? values[++index];
+      if (key === "allowed-mail") (parsed[key] ||= []).push(value);
+      else parsed[key] = value;
     }
   }
   return parsed;
@@ -243,13 +282,15 @@ async function loadTls(options) {
   };
 }
 
-function printStartup() {
+function printStartup(remoteUrl) {
   const protocol = tls ? "https" : "http";
-  const addresses = args.lan ? lanAddresses() : ["127.0.0.1"];
+  const addresses = remoteUrl ? [] : (args.lan ? lanAddresses() : ["127.0.0.1"]);
   process.stdout.write("\nRemote Codex 已启动\n");
   process.stdout.write(`工作目录: ${codexCwd}\n`);
   process.stdout.write("手机扫描二维码或打开地址完成配对（令牌仅保存在 URL # 后，不会发送到静态页面请求）：\n");
-  const urls = addresses.map((address) => `${protocol}://${formatHost(address)}:${port}/#token=${encodeURIComponent(token)}`);
+  const urls = remoteUrl
+    ? [`${remoteUrl}/#token=${encodeURIComponent(token)}`]
+    : addresses.map((address) => `${protocol}://${formatHost(address)}:${port}/#token=${encodeURIComponent(token)}`);
   if (!args["no-qr"]) {
     try {
       process.stdout.write(`\n${terminalQr(urls[0])}\n`);
@@ -258,6 +299,12 @@ function printStartup() {
     }
   }
   for (const url of urls) process.stdout.write(`  ${url}\n`);
+  if (remoteUrl) {
+    const restriction = args["allowed-mail"]?.length
+      ? `，并要求 ${args["allowed-mail"].join(", ")} 完成邮箱验证`
+      : "";
+    process.stdout.write(`\n远程模式通过临时 HTTPS 隧道连接${restriction}；地址会在下次启动时变化。\n`);
+  }
   if (args.lan && !tls) process.stdout.write("\n注意：当前是局域网明文 HTTP。仅在可信网络使用；跨公网请配置 TLS、Tailscale Serve 或 SSH 隧道。\n");
   process.stdout.write("按 Ctrl+C 停止。\n\n");
 }

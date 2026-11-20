@@ -9,7 +9,7 @@
 要求：Node.js 20+，并且电脑已安装、登录 Codex CLI。
 
 ```bash
-git clone <your-repository-url> remote-codex
+git clone https://github.com/Nicksxs/remoteCodex.git remote-codex
 cd remote-codex
 npm start
 ```
@@ -24,10 +24,31 @@ npm run lan
 
 打开会话列表，点“新建会话”，填写电脑上的绝对工作目录，然后发送任务。Safari 或 Chrome 中可使用“添加到主屏幕”获得接近原生 App 的体验。
 
+## 从外网远程连接
+
+远程模式通过 Cloudflare Quick Tunnel 建立从电脑主动发出的加密连接，不需要路由器端口映射，也不会让桥接服务监听公网网卡。先安装 `cloudflared`：
+
+```bash
+brew install cloudflared
+npm run remote
+```
+
+终端会打印一个临时 `https://*.trycloudflare.com/#token=...` 配对地址和二维码。电脑上的进程保持运行时，手机可从蜂窝网络或其他 Wi-Fi 连接；按 `Ctrl+C` 会同时关闭应用和隧道。
+
+如果希望在应用令牌之外再加一层邮箱验证码，可以把允许登录的邮箱传给远程模式：
+
+```bash
+npm run remote -- --allowed-mail you@example.com
+```
+
+可重复使用 `--allowed-mail`。Quick Tunnel 的地址每次启动都会变化，并且没有可用性保证，适合个人临时远程控制。需要固定域名和长期运行时，请创建命名的 Cloudflare Tunnel（或使用 Tailscale），把它指向 `http://127.0.0.1:4173`，并用普通的 `npm start` 启动本应用。
+
 ## 常用启动参数
 
 ```text
 --lan                 监听 0.0.0.0（局域网访问）
+--remote              创建临时 HTTPS 隧道（仅监听 127.0.0.1）
+--allowed-mail EMAIL  远程模式增加邮箱验证码（可重复）
 --host 127.0.0.1      自定义监听地址
 --port 4173           自定义端口
 --cwd /path/project   Codex app-server 的启动目录
@@ -52,6 +73,8 @@ node src/server.mjs --lan --port 4173 --cwd /Users/me/dev/project
 - 手机端只被允许调用会话、消息、中断和审批相关 RPC。`thread/shellCommand`、`command/exec`、删除会话等高风险接口没有暴露。
 - 审批默认使用 `on-request`，新会话默认采用 `workspace-write` 沙箱。界面会对 `danger-full-access` 给出额外警告。
 - `--lan` 的普通 HTTP 只适用于可信局域网。跨公网使用时，请在反向代理或私有组网入口终止 TLS，或者提供 `--tls-cert` / `--tls-key`。不要直接把明文端口映射到公网。
+- `--remote` 只把本机 `127.0.0.1` 服务交给出站 HTTPS 隧道，并自动改用兼容 Quick Tunnel 的长轮询事件通道；不会开放路由器入站端口。
+- 未配置 `--allowed-mail` 时，远程配对 URL 和令牌本身就是访问凭据。不要把它贴到公开聊天、截图或日志中；停止进程即可令临时地址失效。
 - 手机上看到的批准动作会在电脑上产生真实修改。批准前请核对命令、工作目录和原因。
 
 ## 架构
