@@ -8,6 +8,7 @@
     "start": "node src/server.mjs",
     "lan": "node src/server.mjs --lan",
     "remote": "node src/server.mjs --remote",
+    "antigravity": "node src/server.mjs --agent antigravity",
     "test": "node --test",
     "check": "npm test && node --check src/server.mjs && node --check public/app.js"
   },

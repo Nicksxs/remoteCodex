@@ -8,6 +8,7 @@ import { networkInterfaces } from "node:os";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServer } from "./codex-client.mjs";
+import { AntigravityClient, antigravityMethods } from "./antigravity-client.mjs";
 import { EventBuffer } from "./event-buffer.mjs";
 import { startQuickTunnel } from "./remote-tunnel.mjs";
 import { bearerToken, safeJson, tokenMatches } from "./security.mjs";
@@ -19,11 +20,18 @@ const args = parseArgs(process.argv.slice(2));
 const host = args.remote ? "127.0.0.1" : (args.lan ? "0.0.0.0" : (args.host || "127.0.0.1"));
 const port = Number(args.port || process.env.REMOTE_CODEX_PORT || 4173);
 const token = args.token || process.env.REMOTE_CODEX_TOKEN || randomBytes(24).toString("base64url");
-const codexCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
+const workspaceCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
 const codexCommand = args.codex || process.env.REMOTE_CODEX_BIN || "codex";
+const provider = args.agent || "codex";
+if (provider !== "codex" && provider !== "antigravity") {
+  process.stderr.write("--agent 支持 codex 或 antigravity\n");
+  process.exit(1);
+}
+const antigravity = provider === "antigravity";
+const agentName = antigravity ? "Antigravity" : "Codex";
 const tls = await loadTls(args);
 
-const allowedMethods = new Set([
+const allowedMethods = antigravity ? antigravityMethods : new Set([
   "model/list",
   "thread/list",
   "thread/start",
@@ -37,7 +45,9 @@ const allowedMethods = new Set([
   "turn/interrupt",
 ]);
 
-const codex = new CodexAppServer({ command: codexCommand, cwd: codexCwd });
+const backend = antigravity
+  ? new AntigravityClient({ command: args.agy || process.env.REMOTE_CODEX_AGY_BIN, cwd: workspaceCwd })
+  : new CodexAppServer({ command: codexCommand, cwd: workspaceCwd });
 const eventClients = new Set();
 const events = new EventBuffer();
 const eventSession = randomBytes(8).toString("hex");
@@ -51,22 +61,25 @@ function publish(kind, message) {
   for (const response of eventClients) response.write(payload);
 }
 
-codex.on("notification", (message) => publish("notification", message));
-codex.on("serverRequest", (message) => {
+backend.on("notification", (message) => publish("notification", message));
+backend.on("serverRequest", (message) => {
   pendingServerRequests.set(String(message.id), message);
   publish("serverRequest", message);
 });
-codex.on("ready", () => {
+backend.on("requestResolved", ({ id }) => {
+  if (pendingServerRequests.delete(String(id))) publish("requestResolved", { id });
+});
+backend.on("ready", () => {
   lastError = null;
   publish("bridge", { status: "ready" });
 });
-codex.on("exit", ({ error }) => {
+backend.on("exit", ({ error }) => {
   lastError = error.message;
   publish("bridge", { status: "stopped", error: error.message });
 });
-codex.on("protocolError", (error) => publish("bridge", { status: "protocolError", error: error.message }));
-codex.on("log", (line) => {
-  if (args.verbose && line) process.stderr.write(`[codex] ${line}\n`);
+backend.on("protocolError", (error) => publish("bridge", { status: "protocolError", error: error.message }));
+backend.on("log", (line) => {
+  if (args.verbose && line) process.stderr.write(`[${provider}] ${line}\n`);
 });
 
 const requestHandler = async (request, response) => {
@@ -79,9 +92,10 @@ const requestHandler = async (request, response) => {
       if (request.method === "GET" && url.pathname === "/api/status") {
         return sendJson(response, 200, {
           ok: true,
-          codexReady: codex.ready,
+          codexReady: backend.ready,
+          provider,
           error: lastError,
-          cwd: codexCwd,
+          cwd: workspaceCwd,
           transportSecure: Boolean(tls) || Boolean(args.remote) || !args.lan,
           eventTransport: args.remote ? "poll" : "sse",
           eventCursor: events.sequence,
@@ -96,17 +110,17 @@ const requestHandler = async (request, response) => {
       }
       if (request.method === "POST" && url.pathname === "/api/rpc") {
         const body = await readJson(request);
-        if (!allowedMethods.has(body.method)) return sendJson(response, 403, { error: `不允许的 Codex 方法：${body.method || "(empty)"}` });
-        const result = await codex.request(body.method, body.params || {}, 120_000);
+        if (!allowedMethods.has(body.method)) return sendJson(response, 403, { error: `不允许的 ${agentName} 方法：${body.method || "(empty)"}` });
+        const result = await backend.request(body.method, body.params || {}, 120_000);
         return sendJson(response, 200, { result });
       }
       if (request.method === "POST" && url.pathname === "/api/respond") {
         const body = await readJson(request);
         const key = String(body.id);
         if (!pendingServerRequests.has(key)) return sendJson(response, 404, { error: "审批请求已处理或不存在" });
+        if (body.error) backend.respondError(body.id, body.error);
+        else backend.respond(body.id, body.result || {});
         pendingServerRequests.delete(key);
-        if (body.error) codex.respondError(body.id, body.error);
-        else codex.respond(body.id, body.result || {});
         publish("requestResolved", { id: body.id });
         return sendJson(response, 200, { ok: true });
       }
@@ -142,19 +156,19 @@ async function shutdown(signal) {
   events.close();
   for (const response of eventClients) response.end();
   await new Promise((resolveClose) => server.close(resolveClose));
-  await codex.stop();
+  await backend.stop();
 }
 process.on("SIGINT", () => shutdown("SIGINT").then(() => process.exit(0)));
 process.on("SIGTERM", () => shutdown("SIGTERM").then(() => process.exit(0)));
 
 try {
-  await codex.start();
+  await backend.start();
   await new Promise((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
     server.listen(port, host, resolveListen);
   });
   if (args.remote) {
-    const origin = `${tls ? "https" : "http"}://127.0.0.1:${port}`;
+    const origin = `${tls ? "https" : "http"}://127.0.0.1:${server.address().port}`;
     remoteTunnel = await startQuickTunnel({
       origin,
       allowedMail: args["allowed-mail"] || [],
@@ -170,7 +184,7 @@ try {
 } catch (error) {
   process.stderr.write(`Remote Codex 启动失败：${error.message}\n`);
   if (server.listening) await new Promise((resolveClose) => server.close(resolveClose));
-  await codex.stop();
+  await backend.stop();
   process.exitCode = 1;
 }
 
@@ -181,7 +195,7 @@ function openEventStream(request, response) {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  response.write(`retry: 1500\ndata: ${safeJson({ seq: events.sequence, at: Date.now(), kind: "connected", message: { codexReady: codex.ready } })}\n\n`);
+  response.write(`retry: 1500\ndata: ${safeJson({ seq: events.sequence, at: Date.now(), kind: "connected", message: { codexReady: backend.ready } })}\n\n`);
   eventClients.add(response);
   request.on("close", () => eventClients.delete(response));
 }
@@ -286,11 +300,11 @@ function printStartup(remoteUrl) {
   const protocol = tls ? "https" : "http";
   const addresses = remoteUrl ? [] : (args.lan ? lanAddresses() : ["127.0.0.1"]);
   process.stdout.write("\nRemote Codex 已启动\n");
-  process.stdout.write(`工作目录: ${codexCwd}\n`);
+  process.stdout.write(`后端: ${agentName}\n工作目录: ${workspaceCwd}\n`);
   process.stdout.write("手机扫描二维码或打开地址完成配对（令牌仅保存在 URL # 后，不会发送到静态页面请求）：\n");
   const urls = remoteUrl
     ? [`${remoteUrl}/#token=${encodeURIComponent(token)}`]
-    : addresses.map((address) => `${protocol}://${formatHost(address)}:${port}/#token=${encodeURIComponent(token)}`);
+    : addresses.map((address) => `${protocol}://${formatHost(address)}:${server.address().port}/#token=${encodeURIComponent(token)}`);
   if (!args["no-qr"]) {
     try {
       process.stdout.write(`\n${terminalQr(urls[0])}\n`);

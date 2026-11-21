@@ -16,6 +16,8 @@ const state = {
   items: new Map(), itemOrder: [], pending: new Map(), activeTurnId: null, busy: false,
   selectedEffort: "", eventAbort: null, reconnectTimer: null,
   eventTransport: "sse", eventCursor: 0, eventSession: null,
+  provider: "codex", nextCursor: null, listRequest: 0, threadError: "",
+  finishedTurnId: null, sending: false, opening: false, pendingRevision: 0,
 };
 
 bindUi();
@@ -83,6 +85,7 @@ async function connect() {
     const status = await api("/api/status");
     state.connected = true;
     state.codexReady = status.codexReady;
+    updateProvider(status.provider || "codex");
     state.transportSecure = status.transportSecure;
     state.eventTransport = status.eventTransport || "sse";
     if (state.eventSession !== status.eventSession) {
@@ -113,9 +116,38 @@ async function connect() {
 
 async function refreshAll(initial = false) {
   if (!state.token) return;
-  const tasks = [loadThreads(), loadPending()];
-  if (initial || !state.models.length) tasks.push(loadModels());
+  const tasks = [refreshThreads(), loadPending()];
+  if (!isAntigravity() && (initial || !state.models.length)) tasks.push(loadModels());
   await Promise.allSettled(tasks);
+}
+
+function isAntigravity() { return state.provider === "antigravity"; }
+function agentName() { return isAntigravity() ? "Antigravity" : "Codex"; }
+
+function updateProvider(provider) {
+  if (state.provider !== provider) {
+    state.current = null;
+    state.activeTurnId = null;
+    state.pendingRevision++;
+    state.pending.clear();
+    state.threads = [];
+    state.models = [];
+    state.listRequest++;
+    state.nextCursor = null;
+    els.cwd.value = "";
+    els.title.textContent = "Remote Codex";
+    els.welcome.classList.remove("hidden");
+    els.conversation.classList.add("hidden");
+    els.composer.classList.add("hidden");
+    setBusy(false);
+  }
+  state.provider = provider;
+  els.hostName.textContent = $("#homeHostName").textContent = `本机 ${agentName()}`;
+  $("#workingLabel").textContent = `${agentName()} 正在工作`;
+  els.prompt.placeholder = `给 ${agentName()} 一个任务…`;
+  $("#codexModelFields").classList.toggle("hidden", isAntigravity());
+  $("#codexPermissionFields").classList.toggle("hidden", isAntigravity());
+  $("#antigravitySettingsHint").classList.toggle("hidden", !isAntigravity());
 }
 
 async function loadModels() {
@@ -127,14 +159,36 @@ async function loadModels() {
   if ([...els.model.options].some((item) => item.value === selected)) els.model.value = selected;
 }
 
-async function loadThreads() {
-  const result = await rpc("thread/list", { limit: 100, sortKey: "updated_at", sortDirection: "desc" });
-  state.threads = result?.data || [];
+async function loadThreads(cursor) {
+  const request = ++state.listRequest;
+  const result = await rpc("thread/list", {
+    limit: 100, sortKey: "updated_at", sortDirection: "desc", ...(cursor ? { cursor } : {}),
+  });
+  if (request !== state.listRequest) return;
+  const threads = new Map((cursor ? state.threads : []).map((thread) => [thread.id, thread]));
+  for (const thread of result?.data || []) threads.set(thread.id, thread);
+  state.threads = [...threads.values()];
+  state.nextCursor = result?.nextCursor || null;
+  state.threadError = "";
   renderThreads();
 }
 
+async function refreshThreads() {
+  try {
+    await loadThreads();
+  } catch (error) {
+    state.threadError = error.message;
+    renderThreads();
+  }
+}
+
 async function loadPending() {
+  const revision = state.pendingRevision;
   const result = await api("/api/pending");
+  if (isAntigravity()) {
+    if (revision !== state.pendingRevision) return;
+    state.pending.clear();
+  }
   for (const request of result.data || []) state.pending.set(String(request.id), request);
   renderApproval();
 }
@@ -201,10 +255,12 @@ function handleBridgeEvent(event) {
     return updateConnectionUi();
   }
   if (event.kind === "serverRequest") {
+    state.pendingRevision++;
     state.pending.set(String(event.message.id), event.message);
     return renderApproval();
   }
   if (event.kind === "requestResolved") {
+    state.pendingRevision++;
     state.pending.delete(String(event.message.id));
     return renderApproval();
   }
@@ -216,10 +272,11 @@ function handleNotification({ method, params = {} }) {
     state.activeTurnId = params.turn?.id || state.activeTurnId;
     setBusy(true);
   } else if (method === "turn/completed" && isCurrent(params.threadId)) {
+    state.finishedTurnId = params.turn?.id;
     setBusy(false);
     state.activeTurnId = null;
     if (params.turn?.status === "failed") toast(params.turn.error?.message || "任务执行失败");
-    loadThreads().catch(() => {});
+    refreshThreads();
   } else if (method === "item/started" && isCurrent(params.threadId)) {
     upsertItem(params.item);
   } else if (method === "item/completed" && isCurrent(params.threadId)) {
@@ -235,7 +292,7 @@ function handleNotification({ method, params = {} }) {
     loadThreads().catch(() => {});
     if (isCurrent(params.threadId) && params.name) { state.current.name = params.name; els.title.textContent = params.name; }
   } else if (method === "error" && (!params.threadId || isCurrent(params.threadId))) {
-    toast(params.error?.message || params.message || "Codex 返回了错误");
+    toast(params.error?.message || params.message || `${agentName()} 返回了错误`);
   }
 }
 
@@ -249,14 +306,14 @@ function upsertItem(item, shouldRender = true) {
 }
 
 async function openThread(thread) {
+  if (state.opening) return;
+  state.opening = true;
   closeOverlays();
-  els.title.textContent = thread.name || thread.preview || "未命名会话";
-  showConversation();
-  state.activeTurnId = null;
-  setBusy(thread.status?.type === "active");
+  updateSendButton();
   try {
     const result = await rpc("thread/resume", { threadId: thread.id });
     state.current = result.thread;
+    state.activeTurnId = null;
     state.selectedEffort = result.reasoningEffort || "";
     state.items.clear();
     state.itemOrder = [];
@@ -266,10 +323,14 @@ async function openThread(thread) {
     }
     els.title.textContent = result.thread?.name || result.thread?.preview || "未命名会话";
     setBusy(result.thread?.status?.type === "active" || Boolean(state.activeTurnId));
+    showConversation();
     renderThreads();
     renderMessages(true);
   } catch (error) {
     toast(error.message);
+  } finally {
+    state.opening = false;
+    updateSendButton();
   }
 }
 
@@ -287,13 +348,15 @@ async function createThread() {
   try {
     const params = {
       cwd,
-      approvalPolicy: els.approval.value,
-      sandbox: els.sandbox.value,
-      ...(els.model.value ? { model: els.model.value } : {}),
+      ...(!isAntigravity() && {
+        approvalPolicy: els.approval.value,
+        sandbox: els.sandbox.value,
+        ...(els.model.value ? { model: els.model.value } : {}),
+      }),
     };
     const result = await rpc("thread/start", params);
     state.current = result.thread;
-    state.selectedEffort = els.effort.value;
+    state.selectedEffort = isAntigravity() ? "" : els.effort.value;
     state.items.clear();
     state.itemOrder = [];
     state.activeTurnId = null;
@@ -301,7 +364,7 @@ async function createThread() {
     els.title.textContent = "新会话";
     showConversation();
     closeOverlays();
-    await loadThreads();
+    await refreshThreads();
     if (window.matchMedia("(min-width: 760px)").matches) els.prompt.focus();
   } catch (error) {
     toast(error.message);
@@ -313,29 +376,34 @@ async function createThread() {
 
 async function sendPrompt() {
   const text = els.prompt.value.trim();
-  if (!text) return;
+  if (!text || els.send.disabled) return;
   if (!state.current) return openNewThread();
-  els.send.disabled = true;
+  state.sending = true;
+  updateSendButton();
+  const threadId = state.current.id;
   try {
     const input = [{ type: "text", text }];
     if (state.busy && state.activeTurnId) {
-      await rpc("turn/steer", { threadId: state.current.id, input, expectedTurnId: state.activeTurnId });
+      await rpc("turn/steer", { threadId, input, expectedTurnId: state.activeTurnId });
       toast("已插入当前任务");
     } else {
       const result = await rpc("turn/start", {
-        threadId: state.current.id,
+        threadId,
         input,
         ...(state.selectedEffort ? { effort: state.selectedEffort } : {}),
       });
-      state.activeTurnId = result.turn?.id || null;
-      setBusy(true);
+      if (isCurrent(threadId) && result.turn?.id !== state.finishedTurnId) {
+        state.activeTurnId = result.turn?.id || null;
+        setBusy(true);
+      }
     }
     els.prompt.value = "";
     resizePrompt();
   } catch (error) {
     toast(error.message);
   } finally {
-    els.send.disabled = false;
+    state.sending = false;
+    updateSendButton();
   }
 }
 
@@ -355,13 +423,27 @@ function renderThreads() {
   els.threadList.replaceChildren();
   els.homeThreadList.replaceChildren();
   els.sessionCount.textContent = `${state.threads.length} 个会话`;
+  if (state.threadError) {
+    for (const list of [els.threadList, els.homeThreadList]) list.append(node("div", "thread-empty", state.threadError));
+  }
   if (!state.threads.length) {
+    if (state.threadError) return;
     els.threadList.append(node("div", "thread-empty", "还没有会话，先创建一个吧"));
     els.homeThreadList.append(node("div", "thread-empty", "还没有会话"));
     return;
   }
   for (const thread of state.threads) els.threadList.append(threadButton(thread));
   for (const thread of state.threads.slice(0, 5)) els.homeThreadList.append(threadButton(thread));
+  if (state.nextCursor) {
+    const more = node("button", "text-button", "加载更多会话");
+    more.type = "button";
+    more.addEventListener("click", async () => {
+      more.disabled = true;
+      try { await loadThreads(state.nextCursor); } catch (error) { toast(error.message); }
+      more.disabled = false;
+    });
+    els.threadList.append(more);
+  }
 }
 
 function renderMessages(forceScroll = false) {
@@ -405,7 +487,7 @@ function itemElement(item) {
   }
   if (item.type === "agentMessage") {
     const root = node("article", "message agent");
-    root.append(node("div", "message-label", "CODEX"));
+    root.append(node("div", "message-label", agentName().toUpperCase()));
     const content = node("div", "message-text");
     renderRichText(content, item.text || "");
     root.append(content);
@@ -419,6 +501,10 @@ function itemElement(item) {
     return activity(`文件修改 · ${statusLabel(item.status)}`, changes);
   }
   if (item.type === "mcpToolCall") return activity(`工具 · ${item.server || "MCP"}/${item.tool || ""}`, pretty(item.result || item.error || item.arguments || ""), item.status === "failed");
+  if (item.type === "antigravityTool") return activity(
+    `工具 · ${item.details.title || item.details.kind || "Antigravity"} · ${statusLabel(item.status)}`,
+    pretty(item.details), item.status === "failed",
+  );
   if (item.type === "collabAgentToolCall" || item.type === "subAgentActivity") return activity("子任务", pretty(item));
   if (item.type === "webSearch") return activity("网络搜索", item.query || pretty(item));
   return null;
@@ -460,7 +546,17 @@ function renderApproval() {
   const params = request.params || {};
   els.approvalContent.append(node("div", "approval-icon", "!"));
 
-  if (request.method === "item/commandExecution/requestApproval") {
+  if (isAntigravity() && request.method === "session/request_permission") {
+    els.approvalContent.append(node("h2", "", "Antigravity 请求权限"), node("pre", "approval-code", pretty(params.toolCall)));
+    const options = params.options || [];
+    const actions = node("div", `approval-actions${options.length === 2 ? " three" : ""}`);
+    actions.append(approvalButton("取消", "deny", () => answerRequest(request, {})));
+    for (const option of options) {
+      const allow = option.kind === "allow_once";
+      actions.append(approvalButton(allow ? "本次允许" : "本次拒绝", allow ? "allow" : "deny", () => answerRequest(request, { optionId: option.optionId })));
+    }
+    els.approvalContent.append(actions);
+  } else if (request.method === "item/commandExecution/requestApproval") {
     els.approvalContent.append(node("p", "eyebrow", "APPROVAL REQUIRED"), node("h2", "", "允许执行命令？"));
     if (params.reason) els.approvalContent.append(node("p", "approval-copy", params.reason));
     els.approvalContent.append(node("pre", "approval-code", `${params.command || "未知命令"}${params.cwd ? `\n\n工作目录：${params.cwd}` : ""}`));
@@ -542,6 +638,7 @@ function questionElement(question) {
 async function answerRequest(request, result) {
   try {
     await api("/api/respond", { method: "POST", body: { id: request.id, result } });
+    state.pendingRevision++;
     state.pending.delete(String(request.id));
     renderApproval();
   } catch (error) {
@@ -561,8 +658,13 @@ function setBusy(value) {
   els.working.classList.toggle("hidden", !value);
   els.stop.classList.toggle("hidden", !value);
   els.statusDot.classList.toggle("busy", value);
-  $("#composerHint").textContent = value ? "正在工作，可以继续插话" : "发送消息";
+  $("#composerHint").textContent = !value ? "发送消息" : isAntigravity() ? "正在工作" : "正在工作，可以继续插话";
+  updateSendButton();
   updateConnectionUi();
+}
+
+function updateSendButton() {
+  els.send.disabled = state.sending || state.opening || (isAntigravity() && state.busy);
 }
 
 function updateConnectionUi() {
@@ -570,7 +672,7 @@ function updateConnectionUi() {
   els.statusDot.classList.toggle("online", online && !state.busy);
   els.statusDot.classList.toggle("busy", online && state.busy);
   els.drawerDot.classList.toggle("online", online);
-  const label = !state.connected ? "已断线" : !state.codexReady ? "Codex 未就绪" : state.busy ? "正在工作" : "已连接";
+  const label = !state.connected ? "已断线" : !state.codexReady ? `${agentName()} 未就绪` : state.busy ? "正在工作" : "已连接";
   els.statusText.textContent = label;
   els.homeStatus.textContent = label;
   els.homeStatus.classList.toggle("online", online && !state.busy);
@@ -665,7 +767,7 @@ function relativeTime(seconds) {
 function pretty(value) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function statusLabel(value) {
   const status = typeof value === "string" ? value : value?.type;
-  return ({ inProgress: "进行中", completed: "完成", failed: "失败", declined: "已拒绝", interrupted: "已停止" })[status] || status || "进行中";
+  return ({ pending: "等待中", in_progress: "进行中", inProgress: "进行中", completed: "完成", failed: "失败", declined: "已拒绝", interrupted: "已停止" })[status] || status || "进行中";
 }
 
 let toastTimer;

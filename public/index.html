@@ -34,7 +34,7 @@
           </div>
           <section class="host-card" aria-label="电脑连接状态">
             <div class="host-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H4zM9 20h6M12 16v4"/></svg></div>
-            <div class="host-card-copy"><strong>本机 Codex</strong><span id="homeCwd">正在读取工作目录…</span></div>
+            <div class="host-card-copy"><strong id="homeHostName">本机 Codex</strong><span id="homeCwd">正在读取工作目录…</span></div>
             <span id="homeStatus" class="connection-pill">连接中</span>
           </section>
           <button id="welcomeStartButton" class="primary-button start-button" type="button"><span>新建会话</span><span aria-hidden="true">＋</span></button>
@@ -46,7 +46,7 @@
 
         <section id="conversation" class="conversation hidden" aria-live="polite">
           <div id="messageList" class="message-list"></div>
-          <div id="workingIndicator" class="working hidden"><i></i><span>Codex 正在工作</span></div>
+          <div id="workingIndicator" class="working hidden"><i></i><span id="workingLabel">Codex 正在工作</span></div>
         </section>
       </main>
 
@@ -89,14 +89,14 @@
           <input id="cwdInput" class="field" type="text" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="/path/to/project">
           <p class="field-help">路径位于运行 Remote Codex 的电脑上。</p>
         </section>
-        <section class="form-section">
+        <section id="codexModelFields" class="form-section">
           <h3>模型设置</h3>
           <label class="field-label" for="modelSelect">模型</label>
           <select id="modelSelect" class="field"><option value="">跟随 Codex 默认</option></select>
           <label class="field-label" for="effortSelect">思考深度</label>
           <select id="effortSelect" class="field"><option value="">默认</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">很高</option></select>
         </section>
-        <section class="form-section">
+        <section id="codexPermissionFields" class="form-section">
           <h3>权限</h3>
           <label class="field-label" for="approvalSelect">审批策略</label>
           <select id="approvalSelect" class="field"><option value="on-request">按需确认（推荐）</option><option value="untrusted">仅不可信命令确认</option><option value="never">不询问</option></select>
@@ -104,11 +104,12 @@
           <select id="sandboxSelect" class="field"><option value="workspace-write">可编辑工作目录（推荐）</option><option value="read-only">只读</option><option value="danger-full-access">完全访问（高风险）</option></select>
           <p id="unsafeWarning" class="warning hidden">完全访问允许 Codex 修改工作目录以外的文件，请只在理解风险时使用。</p>
         </section>
+        <p id="antigravitySettingsHint" class="field-help hidden">模型与权限沿用电脑上的 Antigravity CLI 设置。</p>
       </div>
       <footer class="form-page-footer"><button id="createThreadButton" class="primary-button full" type="button">创建会话</button></footer>
     </section>
 
-    <section id="approvalSheet" class="approval-sheet hidden" role="dialog" aria-modal="true" aria-label="Codex 审批请求">
+    <section id="approvalSheet" class="approval-sheet hidden" role="dialog" aria-modal="true" aria-label="审批请求">
       <div class="sheet-handle"></div><div id="approvalContent"></div>
     </section>
 

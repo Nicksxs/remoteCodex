@@ -9,7 +9,7 @@
 要求：Node.js 20+，并且电脑已安装、登录 Codex CLI。
 
 ```bash
-git clone https://github.com/Nicksxs/remoteCodex.git remote-codex
+git clone <your-repository-url> remote-codex
 cd remote-codex
 npm start
 ```
@@ -43,6 +43,20 @@ npm run remote -- --allowed-mail you@example.com
 
 可重复使用 `--allowed-mail`。Quick Tunnel 的地址每次启动都会变化，并且没有可用性保证，适合个人临时远程控制。需要固定域名和长期运行时，请创建命名的 Cloudflare Tunnel（或使用 Tailscale），把它指向 `http://127.0.0.1:4173`，并用普通的 `npm start` 启动本应用。
 
+## 连接 Antigravity
+
+在电脑上安装支持 ACP 的 [Antigravity CLI](https://antigravity.google/docs/cli/acp)，确认 `agy acp --help` 可用。首次使用时，运行 `agy acp --login` 并在电脑上完成登录。
+
+```bash
+npm run antigravity                         # 本机预览
+npm run antigravity -- --lan                # 同一 Wi-Fi
+npm run antigravity -- --remote             # 外网，需安装 cloudflared
+```
+
+扫码后，手机可新建会话、恢复 ACP 可见的历史、查看流式回复和工具进度、处理单次审批，以及停止任务。模型与权限沿用 Antigravity CLI 设置。需要为 Codex 和 Antigravity 分别运行一个入口时，请使用不同的端口。
+
+若要接管已经在 Antigravity 桌面 App 中运行的会话，请在桌面端启用 [Google Remote Control](https://antigravity.google/docs/remote-control/)，然后在手机上用同一 Google 账号打开 [Antigravity 网页](https://antigravity.google.com/)。
+
 ## 常用启动参数
 
 ```text
@@ -53,6 +67,8 @@ npm run remote -- --allowed-mail you@example.com
 --port 4173           自定义端口
 --cwd /path/project   Codex app-server 的启动目录
 --codex /path/codex   自定义 Codex CLI 路径
+--agent antigravity   使用 Antigravity ACP（默认 codex）
+--agy /path/agy       自定义 agy 路径（也可用 REMOTE_CODEX_AGY_BIN）
 --token <secret>      固定配对令牌（也可用 REMOTE_CODEX_TOKEN）
 --tls-cert cert.pem   HTTPS 证书
 --tls-key key.pem     HTTPS 私钥
