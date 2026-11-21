@@ -4,6 +4,8 @@ import { createInterface } from "node:readline";
 const lines = createInterface({ input: process.stdin });
 const previous = { sessionId: "previous", title: "上一条会话", cwd: process.cwd(), updatedAt: "2026-11-20T00:00:00Z" };
 const older = { ...previous, sessionId: "older", title: "更早的会话" };
+const untitled = { sessionId: "untitled", title: null, cwd: process.cwd(), updatedAt: "2026-11-19T00:00:00Z" };
+let listedSessions = [previous];
 let active;
 let approvalId = 100;
 
@@ -24,20 +26,52 @@ lines.on("line", (line) => {
       reply({ protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } } });
       break;
     case "session/list":
-      reply(params.cursor ? { sessions: [older] } : { sessions: [previous], nextCursor: "next-page" });
+      reply(params.cursor ? { sessions: [older, untitled] } : { sessions: listedSessions, nextCursor: "next-page" });
       break;
     case "session/new":
       if (params.mcpServers.length) throw new Error("Remote MCP configuration is not supported");
       reply({ sessionId: "new" });
       break;
     case "session/load":
+      if (params.sessionId === "untitled") {
+        update(params.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "无标题会话的首条问题" } });
+        update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "先分析问题" } });
+        update(params.sessionId, {
+          sessionUpdate: "plan",
+          entries: [
+            { content: "读取配置", status: "completed" },
+            { content: "修改实现", status: "in_progress" },
+          ],
+        });
+        update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "已处理" } });
+        reply({});
+        break;
+      }
       update(params.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "旧问题" } });
       for (const text of ["旧", "回答"]) {
         update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
       }
       reply({});
       break;
-    case "session/prompt":
+    case "session/prompt": {
+      const promptText = params.prompt?.[0]?.text || "";
+      if (promptText === "CRASH") {
+        process.exit(2);
+      }
+      if (promptText === "REFUSE") {
+        const nowSeconds = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+        listedSessions = [{ sessionId: params.sessionId, title: "自动生成的标题", cwd: process.cwd(), updatedAt: nowSeconds }, previous];
+        reply({ stopReason: "refusal" });
+        break;
+      }
+      if (promptText === "THINK_AND_PLAN") {
+        update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "思考第一段，" } });
+        update(params.sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "思考第二段" } });
+        update(params.sessionId, { sessionUpdate: "plan", entries: [{ content: "检查测试", status: "completed" }] });
+        update(params.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "规划完毕" } });
+        reply({ stopReason: "end_turn" });
+        break;
+      }
       active = { id, sessionId: params.sessionId, permission: ++approvalId, cancelled: false };
       update(active.sessionId, { sessionUpdate: "tool_call", toolCallId: `tool-${id}`, title: "Read README", kind: "read", rawInput: { path: "README.md" } });
       send({ id: active.permission, method: "session/request_permission", params: {
@@ -50,6 +84,7 @@ lines.on("line", (line) => {
         ],
       } });
       break;
+    }
     case "session/cancel":
       if (active?.sessionId === params.sessionId) active.cancelled = true;
       break;

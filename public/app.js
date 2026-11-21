@@ -117,6 +117,7 @@ async function connect() {
 async function refreshAll(initial = false) {
   if (!state.token) return;
   const tasks = [refreshThreads(), loadPending()];
+  if (state.current) tasks.push(refreshCurrentThread());
   if (!isAntigravity() && (initial || !state.models.length)) tasks.push(loadModels());
   await Promise.allSettled(tasks);
 }
@@ -185,10 +186,8 @@ async function refreshThreads() {
 async function loadPending() {
   const revision = state.pendingRevision;
   const result = await api("/api/pending");
-  if (isAntigravity()) {
-    if (revision !== state.pendingRevision) return;
-    state.pending.clear();
-  }
+  if (revision !== state.pendingRevision) return;
+  state.pending.clear();
   for (const request of result.data || []) state.pending.set(String(request.id), request);
   renderApproval();
 }
@@ -239,11 +238,13 @@ async function pollEvents(signal) {
     const payload = await response.json();
     state.connected = true;
     updateConnectionUi();
+    const wasTruncated = Boolean(payload.truncated);
     for (const event of payload.data || []) {
       state.eventCursor = Math.max(state.eventCursor, event.seq || 0);
       handleBridgeEvent(event);
     }
     state.eventCursor = Math.max(state.eventCursor, payload.cursor || 0);
+    if (wasTruncated) refreshAll(false);
   }
 }
 
@@ -275,7 +276,9 @@ function handleNotification({ method, params = {} }) {
     state.finishedTurnId = params.turn?.id;
     setBusy(false);
     state.activeTurnId = null;
-    if (params.turn?.status === "failed") toast(params.turn.error?.message || "任务执行失败");
+    if (params.turn?.status === "failed" || (params.turn?.status === "declined" && params.turn?.error?.message)) {
+      toast(params.turn.error?.message || "任务执行失败");
+    }
     refreshThreads();
   } else if (method === "item/started" && isCurrent(params.threadId)) {
     upsertItem(params.item);
@@ -305,27 +308,47 @@ function upsertItem(item, shouldRender = true) {
   if (shouldRender) renderMessages();
 }
 
+function applyThreadResult(result, { resetScroll = false } = {}) {
+  state.current = result.thread;
+  state.activeTurnId = null;
+  if (result.reasoningEffort !== undefined) state.selectedEffort = result.reasoningEffort || "";
+  state.items.clear();
+  state.itemOrder = [];
+  for (const turn of result.thread?.turns || []) {
+    for (const item of turn.items || []) upsertItem(item, false);
+    if (turn.status === "inProgress") state.activeTurnId = turn.id;
+  }
+  els.title.textContent = result.thread?.name || result.thread?.preview || "未命名会话";
+  setBusy(result.thread?.status?.type === "active" || Boolean(state.activeTurnId));
+  renderMessages(resetScroll);
+}
+
+async function refreshCurrentThread() {
+  if (!state.current || state.opening) return;
+  const targetId = state.current.id;
+  const cwd = state.current.cwd;
+  const result = await rpc("thread/resume", {
+    threadId: targetId,
+    ...(isAntigravity() && cwd ? { cwd } : {}),
+  });
+  if (!isCurrent(targetId)) return;
+  applyThreadResult(result, { resetScroll: false });
+  renderThreads();
+}
+
 async function openThread(thread) {
   if (state.opening) return;
   state.opening = true;
   closeOverlays();
   updateSendButton();
   try {
-    const result = await rpc("thread/resume", { threadId: thread.id });
-    state.current = result.thread;
-    state.activeTurnId = null;
-    state.selectedEffort = result.reasoningEffort || "";
-    state.items.clear();
-    state.itemOrder = [];
-    for (const turn of result.thread?.turns || []) {
-      for (const item of turn.items || []) upsertItem(item, false);
-      if (turn.status === "inProgress") state.activeTurnId = turn.id;
-    }
-    els.title.textContent = result.thread?.name || result.thread?.preview || "未命名会话";
-    setBusy(result.thread?.status?.type === "active" || Boolean(state.activeTurnId));
+    const result = await rpc("thread/resume", {
+      threadId: thread.id,
+      ...(isAntigravity() && thread.cwd ? { cwd: thread.cwd } : {}),
+    });
+    applyThreadResult(result, { resetScroll: true });
     showConversation();
     renderThreads();
-    renderMessages(true);
   } catch (error) {
     toast(error.message);
   } finally {
@@ -383,7 +406,7 @@ async function sendPrompt() {
   const threadId = state.current.id;
   try {
     const input = [{ type: "text", text }];
-    if (state.busy && state.activeTurnId) {
+    if (!isAntigravity() && state.busy && state.activeTurnId) {
       await rpc("turn/steer", { threadId, input, expectedTurnId: state.activeTurnId });
       toast("已插入当前任务");
     } else {
@@ -447,12 +470,18 @@ function renderThreads() {
 }
 
 function renderMessages(forceScroll = false) {
-  const shouldStick = forceScroll || state.busy || isNearBottom();
+  const shouldStick = forceScroll || isNearBottom();
+  const openIds = new Set(
+    [...els.messageList.querySelectorAll("details[data-item-id]")].filter((el) => el.open).map((el) => el.dataset.itemId),
+  );
   els.messageList.replaceChildren();
   for (const id of state.itemOrder) {
     const item = state.items.get(id);
     const element = itemElement(item);
-    if (element) els.messageList.append(element);
+    if (!element) continue;
+    element.dataset.itemId = id;
+    if (openIds.has(id) && "open" in element) element.open = true;
+    els.messageList.append(element);
   }
   if (shouldStick) requestAnimationFrame(scrollToLatest);
 }
@@ -547,13 +576,25 @@ function renderApproval() {
   els.approvalContent.append(node("div", "approval-icon", "!"));
 
   if (isAntigravity() && request.method === "session/request_permission") {
-    els.approvalContent.append(node("h2", "", "Antigravity 请求权限"), node("pre", "approval-code", pretty(params.toolCall)));
+    els.approvalContent.append(node("p", "eyebrow", "PERMISSION REQUIRED"), node("h2", "", "Antigravity 请求权限"));
+    const contextParts = [
+      params.sessionName && (!state.current || state.current.id !== params.sessionId) ? `会话：${params.sessionName}` : "",
+      params.cwd ? `工作目录：${params.cwd}` : "",
+    ].filter(Boolean);
+    if (contextParts.length) els.approvalContent.append(node("p", "approval-copy", contextParts.join(" · ")));
+    els.approvalContent.append(node("pre", "approval-code", pretty(params.toolCall)));
     const options = params.options || [];
-    const actions = node("div", `approval-actions${options.length === 2 ? " three" : ""}`);
-    actions.append(approvalButton("取消", "deny", () => answerRequest(request, {})));
-    for (const option of options) {
-      const allow = option.kind === "allow_once";
-      actions.append(approvalButton(allow ? "本次允许" : "本次拒绝", allow ? "allow" : "deny", () => answerRequest(request, { optionId: option.optionId })));
+    const hasRejectOnce = options.some((opt) => opt.kind === "reject_once");
+    const actions = node("div", `approval-actions${options.length + 1 > 2 ? " three" : ""}`);
+    if (!hasRejectOnce) {
+      actions.append(approvalButton("取消审批", "deny", () => answerRequest(request, {})));
+    }
+    for (const opt of options) {
+      const allow = opt.kind === "allow_once";
+      actions.append(approvalButton(allow ? "本次允许" : "本次拒绝", allow ? "allow" : "deny", () => answerRequest(request, { optionId: opt.optionId })));
+    }
+    if (hasRejectOnce) {
+      actions.append(approvalButton("取消本轮", "", () => answerRequest(request, {})));
     }
     els.approvalContent.append(actions);
   } else if (request.method === "item/commandExecution/requestApproval") {
@@ -601,7 +642,7 @@ function renderApproval() {
     els.approvalContent.append(actions);
   } else {
     els.approvalContent.append(node("p", "eyebrow", "UNSUPPORTED REQUEST"), node("h2", "", "需要在电脑端处理"));
-    els.approvalContent.append(node("p", "approval-copy", `当前版本还不能处理 ${request.method}，请在电脑上的 Codex 客户端完成。`));
+    els.approvalContent.append(node("p", "approval-copy", `当前版本还不能处理 ${request.method}，请在电脑上的 ${agentName()} 客户端完成。`));
   }
 }
 

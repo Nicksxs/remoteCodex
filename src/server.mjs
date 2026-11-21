@@ -16,12 +16,24 @@ import { terminalQr } from "./terminal-qr.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = resolve(root, "public");
-const args = parseArgs(process.argv.slice(2));
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(1);
+}
 const host = args.remote ? "127.0.0.1" : (args.lan ? "0.0.0.0" : (args.host || "127.0.0.1"));
-const port = Number(args.port || process.env.REMOTE_CODEX_PORT || 4173);
+const localOnly = isLoopbackHost(host);
+const port = Number(args.port ?? process.env.REMOTE_CODEX_PORT ?? 4173);
+if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  process.stderr.write(`无效的端口号：${args.port ?? process.env.REMOTE_CODEX_PORT}\n`);
+  process.exit(1);
+}
 const token = args.token || process.env.REMOTE_CODEX_TOKEN || randomBytes(24).toString("base64url");
 const workspaceCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
 const codexCommand = args.codex || process.env.REMOTE_CODEX_BIN || "codex";
+const agyArgs = process.env.REMOTE_CODEX_AGY_ARGS ? JSON.parse(process.env.REMOTE_CODEX_AGY_ARGS) : undefined;
 const provider = args.agent || "codex";
 if (provider !== "codex" && provider !== "antigravity") {
   process.stderr.write("--agent 支持 codex 或 antigravity\n");
@@ -46,7 +58,7 @@ const allowedMethods = antigravity ? antigravityMethods : new Set([
 ]);
 
 const backend = antigravity
-  ? new AntigravityClient({ command: args.agy || process.env.REMOTE_CODEX_AGY_BIN, cwd: workspaceCwd })
+  ? new AntigravityClient({ command: args.agy || process.env.REMOTE_CODEX_AGY_BIN, ...(agyArgs ? { args: agyArgs } : {}), cwd: workspaceCwd })
   : new CodexAppServer({ command: codexCommand, cwd: workspaceCwd });
 const eventClients = new Set();
 const events = new EventBuffer();
@@ -75,6 +87,10 @@ backend.on("ready", () => {
 });
 backend.on("exit", ({ error }) => {
   lastError = error.message;
+  for (const id of [...pendingServerRequests.keys()]) {
+    pendingServerRequests.delete(id);
+    publish("requestResolved", { id });
+  }
   publish("bridge", { status: "stopped", error: error.message });
 });
 backend.on("protocolError", (error) => publish("bridge", { status: "protocolError", error: error.message }));
@@ -96,7 +112,7 @@ const requestHandler = async (request, response) => {
           provider,
           error: lastError,
           cwd: workspaceCwd,
-          transportSecure: Boolean(tls) || Boolean(args.remote) || !args.lan,
+          transportSecure: Boolean(tls) || Boolean(args.remote) || localOnly,
           eventTransport: args.remote ? "poll" : "sse",
           eventCursor: events.sequence,
           eventSession,
@@ -110,16 +126,20 @@ const requestHandler = async (request, response) => {
       }
       if (request.method === "POST" && url.pathname === "/api/rpc") {
         const body = await readJson(request);
+        if (!isPlainObject(body)) return sendJson(response, 400, { error: "请求格式无效" });
         if (!allowedMethods.has(body.method)) return sendJson(response, 403, { error: `不允许的 ${agentName} 方法：${body.method || "(empty)"}` });
-        const result = await backend.request(body.method, body.params || {}, 120_000);
+        if (!backend.ready && backend.ensureReady) await backend.ensureReady();
+        const params = isPlainObject(body.params) ? body.params : {};
+        const result = await backend.request(body.method, params, 120_000);
         return sendJson(response, 200, { result });
       }
       if (request.method === "POST" && url.pathname === "/api/respond") {
         const body = await readJson(request);
+        if (!isPlainObject(body)) return sendJson(response, 400, { error: "请求格式无效" });
         const key = String(body.id);
         if (!pendingServerRequests.has(key)) return sendJson(response, 404, { error: "审批请求已处理或不存在" });
         if (body.error) backend.respondError(body.id, body.error);
-        else backend.respond(body.id, body.result || {});
+        else backend.respond(body.id, isPlainObject(body.result) ? body.result : {});
         pendingServerRequests.delete(key);
         publish("requestResolved", { id: body.id });
         return sendJson(response, 200, { ok: true });
@@ -206,8 +226,11 @@ async function pollEvents(url, response) {
   const abort = new AbortController();
   response.once("close", () => abort.abort());
   try {
+    const truncated = events.hasGap(rawCursor);
     const data = await events.wait(rawCursor, { signal: abort.signal });
-    if (!response.destroyed) sendJson(response, 200, { data, cursor: events.sequence });
+    if (!response.destroyed) {
+      sendJson(response, 200, { data, cursor: events.sequence, truncated: truncated || events.hasGap(rawCursor) });
+    }
   } catch (error) {
     if (error.name !== "AbortError") throw error;
   }
@@ -279,12 +302,24 @@ function parseArgs(values) {
     if (arg === "--lan" || arg === "--remote" || arg === "--verbose" || arg === "--no-qr") parsed[arg.slice(2)] = true;
     else if (arg.startsWith("--")) {
       const [key, inline] = arg.slice(2).split("=", 2);
-      const value = inline ?? values[++index];
-      if (key === "allowed-mail") (parsed[key] ||= []).push(value);
-      else parsed[key] = value;
+      const next = inline ?? values[index + 1];
+      if (inline === undefined) {
+        if (next === undefined || next.startsWith("--")) throw new Error(`参数 --${key} 缺少取值`);
+        index += 1;
+      }
+      if (key === "allowed-mail") (parsed[key] ||= []).push(next);
+      else parsed[key] = next;
     }
   }
   return parsed;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLoopbackHost(value) {
+  return value === "127.0.0.1" || value === "::1" || value === "localhost";
 }
 
 async function loadTls(options) {
@@ -319,7 +354,7 @@ function printStartup(remoteUrl) {
       : "";
     process.stdout.write(`\n远程模式通过临时 HTTPS 隧道连接${restriction}；地址会在下次启动时变化。\n`);
   }
-  if (args.lan && !tls) process.stdout.write("\n注意：当前是局域网明文 HTTP。仅在可信网络使用；跨公网请配置 TLS、Tailscale Serve 或 SSH 隧道。\n");
+  if (!remoteUrl && !localOnly && !tls) process.stdout.write("\n注意：当前是局域网明文 HTTP。仅在可信网络使用；跨公网请配置 TLS、Tailscale Serve 或 SSH 隧道。\n");
   process.stdout.write("按 Ctrl+C 停止。\n\n");
 }
 

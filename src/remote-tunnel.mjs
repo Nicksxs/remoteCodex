@@ -17,7 +17,11 @@ export function startQuickTunnel({
   if (!origin) throw new Error("远程隧道缺少本地服务地址");
 
   const commandArgs = ["tunnel", "--no-autoupdate", "--url", origin];
-  for (const address of allowedMail) commandArgs.push("--allowed-mail", address);
+  for (const address of allowedMail) {
+    const trimmed = typeof address === "string" ? address.trim() : "";
+    if (!trimmed || trimmed.startsWith("-")) throw new Error(`无效的 --allowed-mail 参数：${address ?? ""}`);
+    commandArgs.push("--allowed-mail", trimmed);
+  }
   const child = spawn(command, commandArgs, { stdio: ["ignore", "pipe", "pipe"] });
 
   return new Promise((resolve, reject) => {

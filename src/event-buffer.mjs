@@ -1,5 +1,5 @@
 export class EventBuffer {
-  constructor({ limit = 1000 } = {}) {
+  constructor({ limit = 2000 } = {}) {
     this.limit = limit;
     this.sequence = 0;
     this.items = [];
@@ -15,6 +15,11 @@ export class EventBuffer {
       if (event.seq > waiter.after) waiter.finish(this.after(waiter.after));
     }
     return event;
+  }
+
+  hasGap(cursor) {
+    const minCursor = this.items.length ? this.items[0].seq - 1 : this.sequence;
+    return cursor < minCursor;
   }
 
   after(cursor) {
