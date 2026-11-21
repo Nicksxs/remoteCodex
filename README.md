@@ -43,17 +43,21 @@ npm run remote -- --allowed-mail you@example.com
 
 可重复使用 `--allowed-mail`。Quick Tunnel 的地址每次启动都会变化，并且没有可用性保证，适合个人临时远程控制。需要固定域名和长期运行时，请创建命名的 Cloudflare Tunnel（或使用 Tailscale），把它指向 `http://127.0.0.1:4173`，并用普通的 `npm start` 启动本应用。
 
-## 连接 Antigravity
+## 连接 Antigravity 与 Codex（默认双端同时接入）
 
-在电脑上安装支持 ACP 的 [Antigravity CLI](https://antigravity.google/docs/cli/acp)，确认 `agy acp --help` 可用。首次使用时，运行 `agy acp --login` 并在电脑上完成登录。
+默认启动（`npm start` / `npm run lan` / `npm run remote`）会**同时尝试连接本机 Codex 与 Antigravity**；只要任意一端可用即可正常启动，手机端可按标签筛选历史会话，也可在“新建会话”时直接选择使用 Codex 还是 Antigravity。
+
+如需启用 Antigravity，请在电脑上安装支持 ACP 的 [Antigravity CLI](https://antigravity.google/docs/cli/acp)，确认 `agy acp --help` 可用。首次使用时运行 `agy acp --login`（或 `agy`）完成登录。
 
 ```bash
-npm run antigravity                         # 本机预览
-npm run antigravity -- --lan                # 同一 Wi-Fi
-npm run antigravity -- --remote             # 外网，需安装 cloudflared
+npm start                                   # 本机预览（同时连接 Codex + Antigravity）
+npm run lan                                 # 同一 Wi-Fi（同时连接 Codex + Antigravity）
+npm run remote                              # 外网隧道（同时连接 Codex + Antigravity）
+npm run codex -- --lan                      # 仅连接 Codex
+npm run antigravity -- --lan                # 仅连接 Antigravity
 ```
 
-扫码后，手机可新建会话、恢复 ACP 可见的历史、查看流式回复和工具进度、处理单次审批，以及停止任务。模型与权限沿用 Antigravity CLI 设置。需要为 Codex 和 Antigravity 分别运行一个入口时，请使用不同的端口。
+当电脑桌面端（如 `ChatGPT.app` / Codex Desktop）正占用某条历史 Codex 会话的写入锁（`already has an active writer`）时，手机端会自动退回只读打开完整历史，并在你发送新消息时自动分叉（`thread/fork`）继续，无需先退出桌面客户端。
 
 若要接管已经在 Antigravity 桌面 App 中运行的会话，请在桌面端启用 [Google Remote Control](https://antigravity.google/docs/remote-control/)，然后在手机上用同一 Google 账号打开 [Antigravity 网页](https://antigravity.google.com/)。
 
@@ -65,9 +69,9 @@ npm run antigravity -- --remote             # 外网，需安装 cloudflared
 --allowed-mail EMAIL  远程模式增加邮箱验证码（可重复）
 --host 127.0.0.1      自定义监听地址
 --port 4173           自定义端口
---cwd /path/project   Codex app-server 的启动目录
+--cwd /path/project   默认工作目录
+--agent all           后端模式：all（默认，双端同时连接）、codex 或 antigravity
 --codex /path/codex   自定义 Codex CLI 路径
---agent antigravity   使用 Antigravity ACP（默认 codex）
 --agy /path/agy       自定义 agy 路径（也可用 REMOTE_CODEX_AGY_BIN）
 --token <secret>      固定配对令牌（也可用 REMOTE_CODEX_TOKEN）
 --tls-cert cert.pem   HTTPS 证书

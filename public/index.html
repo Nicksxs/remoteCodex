@@ -28,31 +28,40 @@
       <main id="main" class="main">
         <section id="welcome" class="home-screen">
           <div class="home-hero">
-            <p class="eyebrow">REMOTE CODEX</p>
+            <p class="eyebrow">REMOTE AGENT</p>
             <h1>电脑在工作，<br>你不必守在电脑前。</h1>
-            <p>从手机发任务、看进度、处理审批。代码和登录凭据仍留在你的电脑上。</p>
+            <p>从手机同时控制本机 Codex 与 Antigravity，查看进度与处理审批。代码和登录凭据仍留在你的电脑上。</p>
           </div>
           <section class="host-card" aria-label="电脑连接状态">
             <div class="host-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H4zM9 20h6M12 16v4"/></svg></div>
-            <div class="host-card-copy"><strong id="homeHostName">本机 Codex</strong><span id="homeCwd">正在读取工作目录…</span></div>
+            <div class="host-card-copy">
+              <strong id="homeHostName">本机 Agent</strong>
+              <span id="homeCwd">正在读取工作目录…</span>
+              <div id="providerStatusList" class="provider-status-list hidden"></div>
+            </div>
             <span id="homeStatus" class="connection-pill">连接中</span>
           </section>
           <button id="welcomeStartButton" class="primary-button start-button" type="button"><span>新建会话</span><span aria-hidden="true">＋</span></button>
           <section class="recent-section" aria-labelledby="recentTitle">
             <div class="section-heading"><h2 id="recentTitle">最近会话</h2><button id="viewAllThreadsButton" class="text-button" type="button">查看全部</button></div>
+            <div id="homeAgentTabs" class="segmented-tabs hidden" role="tablist" aria-label="按后端筛选">
+              <button class="segment-button active" type="button" data-filter="all">全部</button>
+              <button class="segment-button" type="button" data-filter="codex">Codex</button>
+              <button class="segment-button" type="button" data-filter="antigravity">Antigravity</button>
+            </div>
             <div id="homeThreadList" class="thread-list home-thread-list"></div>
           </section>
         </section>
 
         <section id="conversation" class="conversation hidden" aria-live="polite">
           <div id="messageList" class="message-list"></div>
-          <div id="workingIndicator" class="working hidden"><i></i><span id="workingLabel">Codex 正在工作</span></div>
+          <div id="workingIndicator" class="working hidden"><i></i><span id="workingLabel">正在工作</span></div>
         </section>
       </main>
 
       <footer id="composer" class="composer hidden">
         <div class="composer-box">
-          <textarea id="promptInput" rows="1" maxlength="30000" enterkeyhint="send" placeholder="给 Codex 一个任务…" aria-label="消息"></textarea>
+          <textarea id="promptInput" rows="1" maxlength="30000" enterkeyhint="send" placeholder="输入任务…" aria-label="消息"></textarea>
           <div class="composer-actions">
             <button id="stopButton" class="stop-button hidden" type="button" aria-label="停止任务"><span></span>停止</button>
             <span id="composerHint">发送消息</span>
@@ -70,9 +79,14 @@
         <div><h2>会话</h2><span id="sessionCount">0 个会话</span></div>
         <button id="drawerNewButton" class="icon-button accent" type="button" aria-label="新建会话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
       </header>
+      <div id="drawerAgentTabs" class="segmented-tabs drawer-tabs hidden" role="tablist" aria-label="按后端筛选">
+        <button class="segment-button active" type="button" data-filter="all">全部</button>
+        <button class="segment-button" type="button" data-filter="codex">Codex</button>
+        <button class="segment-button" type="button" data-filter="antigravity">Antigravity</button>
+      </div>
       <div id="threadList" class="thread-list panel-thread-list"></div>
       <footer class="panel-footer">
-        <div class="host-chip"><i id="drawerStatusDot" class="status-dot"></i><div><strong id="hostName">本机 Codex</strong><small id="hostCwd">—</small></div></div>
+        <div class="host-chip"><i id="drawerStatusDot" class="status-dot"></i><div><strong id="hostName">本机 Agent</strong><small id="hostCwd">—</small></div></div>
         <button id="disconnectButton" class="text-button danger-text" type="button">断开</button>
       </footer>
     </aside>
@@ -80,14 +94,22 @@
     <section id="newThreadSheet" class="form-page hidden" role="dialog" aria-modal="true" aria-labelledby="newThreadTitle">
       <header class="form-page-header">
         <button class="icon-button sheet-close" type="button" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
-        <div><h2 id="newThreadTitle">新建会话</h2><span>选择电脑上的项目与权限</span></div>
+        <div><h2 id="newThreadTitle">新建会话</h2><span>选择后端、项目目录与权限</span></div>
         <span class="header-spacer"></span>
       </header>
       <div class="form-scroll">
+        <section id="agentPickerSection" class="form-section hidden">
+          <label class="field-label">选择 Agent</label>
+          <div id="newThreadAgentTabs" class="segmented-tabs two">
+            <button class="segment-button active" type="button" data-agent="codex">Codex</button>
+            <button class="segment-button" type="button" data-agent="antigravity">Antigravity</button>
+          </div>
+          <p id="selectedAgentHint" class="field-help hidden"></p>
+        </section>
         <section class="form-section">
           <label class="field-label" for="cwdInput">工作目录</label>
           <input id="cwdInput" class="field" type="text" inputmode="text" autocapitalize="none" autocomplete="off" spellcheck="false" placeholder="/path/to/project">
-          <p class="field-help">路径位于运行 Remote Codex 的电脑上。</p>
+          <p class="field-help">路径位于运行桥接服务的电脑上。</p>
         </section>
         <section id="codexModelFields" class="form-section">
           <h3>模型设置</h3>

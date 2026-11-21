@@ -5,6 +5,8 @@ const els = {
   title: $("#threadTitle"), statusText: $("#statusText"), statusDot: $("#statusDot"), drawerDot: $("#drawerStatusDot"),
   drawer: $("#sessionDrawer"), scrim: $("#scrim"), threadList: $("#threadList"), homeThreadList: $("#homeThreadList"),
   hostCwd: $("#hostCwd"), homeCwd: $("#homeCwd"), homeStatus: $("#homeStatus"), sessionCount: $("#sessionCount"), hostName: $("#hostName"),
+  providerStatusList: $("#providerStatusList"), homeAgentTabs: $("#homeAgentTabs"), drawerAgentTabs: $("#drawerAgentTabs"),
+  agentPickerSection: $("#agentPickerSection"), newThreadAgentTabs: $("#newThreadAgentTabs"), selectedAgentHint: $("#selectedAgentHint"),
   newSheet: $("#newThreadSheet"), approvalSheet: $("#approvalSheet"), approvalContent: $("#approvalContent"),
   pairing: $("#pairingSheet"), tokenInput: $("#tokenInput"), pairingError: $("#pairingError"), pairButton: $("#pairButton"),
   cwd: $("#cwdInput"), model: $("#modelSelect"), effort: $("#effortSelect"), approval: $("#approvalSelect"), sandbox: $("#sandboxSelect"),
@@ -12,11 +14,21 @@ const els = {
 };
 
 const state = {
-  token: "", connected: false, codexReady: false, transportSecure: true, cwd: "", threads: [], models: [], current: null,
+  token: "", connected: false, codexReady: false, transportSecure: true, cwd: "",
+  providers: {
+    codex: { enabled: true, ready: false, error: null, label: "Codex" },
+    antigravity: { enabled: false, ready: false, error: null, label: "Antigravity" },
+  },
+  filterProvider: "all",
+  newThreadProvider: "codex",
+  threadsByProvider: { codex: [], antigravity: [] },
+  nextCursorByProvider: { codex: null, antigravity: null },
+  errorsByProvider: { codex: "", antigravity: "" },
+  listRequestByProvider: { codex: 0, antigravity: 0 },
+  models: [], current: null, writerLocked: false, subscribedCodexThreadId: null,
   items: new Map(), itemOrder: [], pending: new Map(), activeTurnId: null, busy: false,
   selectedEffort: "", eventAbort: null, reconnectTimer: null,
   eventTransport: "sse", eventCursor: 0, eventSession: null,
-  provider: "codex", nextCursor: null, listRequest: 0, threadError: "",
   finishedTurnId: null, sending: false, opening: false, pendingRevision: 0,
 };
 
@@ -46,6 +58,12 @@ function bindUi() {
   $("#disconnectButton").addEventListener("click", disconnect);
   els.scrim.addEventListener("click", closeOverlays);
   document.querySelectorAll(".sheet-close").forEach((button) => button.addEventListener("click", closeOverlays));
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => setFilterProvider(button.dataset.filter));
+  });
+  document.querySelectorAll("[data-agent]").forEach((button) => {
+    button.addEventListener("click", () => setNewThreadProvider(button.dataset.agent));
+  });
   els.pairButton.addEventListener("click", pair);
   els.tokenInput.addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });
   els.createThread.addEventListener("click", createThread);
@@ -85,7 +103,7 @@ async function connect() {
     const status = await api("/api/status");
     state.connected = true;
     state.codexReady = status.codexReady;
-    updateProvider(status.provider || "codex");
+    syncProviders(status);
     state.transportSecure = status.transportSecure;
     state.eventTransport = status.eventTransport || "sse";
     if (state.eventSession !== status.eventSession) {
@@ -114,45 +132,140 @@ async function connect() {
   }
 }
 
-async function refreshAll(initial = false) {
-  if (!state.token) return;
-  const tasks = [refreshThreads(), loadPending()];
-  if (state.current) tasks.push(refreshCurrentThread());
-  if (!isAntigravity() && (initial || !state.models.length)) tasks.push(loadModels());
-  await Promise.allSettled(tasks);
+function enabledProviders() {
+  return ["codex", "antigravity"].filter((name) => state.providers[name]?.enabled);
 }
 
-function isAntigravity() { return state.provider === "antigravity"; }
-function agentName() { return isAntigravity() ? "Antigravity" : "Codex"; }
+function isDualMode() {
+  return enabledProviders().length > 1;
+}
 
-function updateProvider(provider) {
-  if (state.provider !== provider) {
+function providerLabel(provider) {
+  return provider === "antigravity" ? "Antigravity" : "Codex";
+}
+
+function currentProvider() {
+  return state.current?.provider || state.newThreadProvider || enabledProviders()[0] || "codex";
+}
+
+function isCurrentAntigravity() {
+  return currentProvider() === "antigravity";
+}
+
+function syncProviders(status) {
+  if (status.providers) {
+    state.providers = status.providers;
+  } else {
+    const single = status.provider === "antigravity" ? "antigravity" : "codex";
+    state.providers = {
+      codex: { enabled: single === "codex", ready: single === "codex" && Boolean(status.codexReady), error: status.error || null, label: "Codex" },
+      antigravity: { enabled: single === "antigravity", ready: single === "antigravity" && Boolean(status.codexReady), error: status.error || null, label: "Antigravity" },
+    };
+  }
+  const enabled = enabledProviders();
+  if (state.current && !state.providers[state.current.provider]?.enabled) {
     state.current = null;
+    state.writerLocked = false;
     state.activeTurnId = null;
-    state.pendingRevision++;
-    state.pending.clear();
-    state.threads = [];
-    state.models = [];
-    state.listRequest++;
-    state.nextCursor = null;
-    els.cwd.value = "";
     els.title.textContent = "Remote Codex";
     els.welcome.classList.remove("hidden");
     els.conversation.classList.add("hidden");
     els.composer.classList.add("hidden");
     setBusy(false);
   }
-  state.provider = provider;
-  els.hostName.textContent = $("#homeHostName").textContent = `本机 ${agentName()}`;
-  $("#workingLabel").textContent = `${agentName()} 正在工作`;
-  els.prompt.placeholder = `给 ${agentName()} 一个任务…`;
-  $("#codexModelFields").classList.toggle("hidden", isAntigravity());
-  $("#codexPermissionFields").classList.toggle("hidden", isAntigravity());
-  $("#antigravitySettingsHint").classList.toggle("hidden", !isAntigravity());
+  if (state.filterProvider !== "all" && !state.providers[state.filterProvider]?.enabled) {
+    state.filterProvider = enabled.length > 1 ? "all" : (enabled[0] || "codex");
+  }
+  if (!state.providers[state.newThreadProvider]?.enabled) {
+    state.newThreadProvider = enabled.find((name) => state.providers[name]?.ready) || enabled[0] || "codex";
+  } else if (!state.providers[state.newThreadProvider]?.ready) {
+    const readyAlt = enabled.find((name) => state.providers[name]?.ready);
+    if (readyAlt && !state.current) state.newThreadProvider = readyAlt;
+  }
+
+  const dual = isDualMode();
+  els.homeAgentTabs.classList.toggle("hidden", !dual);
+  els.drawerAgentTabs.classList.toggle("hidden", !dual);
+  els.agentPickerSection.classList.toggle("hidden", !dual);
+  els.providerStatusList.classList.toggle("hidden", !dual);
+
+  const hostTitle = dual ? "本机 Codex + Antigravity" : `本机 ${providerLabel(enabled[0] || "codex")}`;
+  els.hostName.textContent = $("#homeHostName").textContent = hostTitle;
+
+  renderProviderStatusBadges();
+  syncFilterTabsUi();
+  syncNewThreadFormUi();
+  syncConversationAgentUi();
+}
+
+function renderProviderStatusBadges() {
+  els.providerStatusList.replaceChildren();
+  for (const name of enabledProviders()) {
+    const info = state.providers[name];
+    const badge = node("span", `provider-badge${info.ready ? " ready" : ""}`);
+    badge.append(node("i"), document.createTextNode(`${info.label} ${info.ready ? "已就绪" : "未就绪"}`));
+    if (info.error) badge.title = info.error;
+    els.providerStatusList.append(badge);
+  }
+}
+
+function setFilterProvider(filter) {
+  state.filterProvider = filter;
+  syncFilterTabsUi();
+  if (filter !== "all" && !state.threadsByProvider[filter].length) {
+    loadProviderThreads(filter, null, true).catch(() => {});
+  }
+  renderThreads();
+}
+
+function syncFilterTabsUi() {
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.filter === state.filterProvider);
+  });
+}
+
+function setNewThreadProvider(provider) {
+  if (!state.providers[provider]?.enabled) return;
+  state.newThreadProvider = provider;
+  syncNewThreadFormUi();
+  if (provider === "codex" && !state.models.length && state.providers.codex?.ready) {
+    loadModels().catch(() => {});
+  }
+}
+
+function syncNewThreadFormUi() {
+  const antigravity = state.newThreadProvider === "antigravity";
+  document.querySelectorAll("[data-agent]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.agent === state.newThreadProvider);
+  });
+  $("#codexModelFields").classList.toggle("hidden", antigravity);
+  $("#codexPermissionFields").classList.toggle("hidden", antigravity);
+  $("#antigravitySettingsHint").classList.toggle("hidden", !antigravity);
+  const info = state.providers[state.newThreadProvider];
+  const hint = !info?.ready && info?.error ? `${info.label} 当前未就绪：${info.error}（点击创建将尝试重新连接）` : "";
+  els.selectedAgentHint.textContent = hint;
+  els.selectedAgentHint.classList.toggle("hidden", !hint);
+}
+
+function syncConversationAgentUi() {
+  const label = providerLabel(currentProvider());
+  $("#workingLabel").textContent = `${label} 正在工作`;
+  els.prompt.placeholder = `给 ${label} 一个任务…`;
+  updateComposerHint();
+}
+
+async function refreshAll(initial = false) {
+  if (!state.token) return;
+  const tasks = [refreshThreads(), loadPending()];
+  if (state.current) tasks.push(refreshCurrentThread());
+  if (state.providers.codex?.enabled && state.providers.codex?.ready && (initial || !state.models.length)) {
+    tasks.push(loadModels());
+  }
+  await Promise.allSettled(tasks);
 }
 
 async function loadModels() {
-  const result = await rpc("model/list", { limit: 100, includeHidden: false });
+  const result = await rpc("model/list", { limit: 100, includeHidden: false }, "codex");
   state.models = (result?.data || []).filter((model) => !model.hidden);
   const selected = els.model.value;
   els.model.replaceChildren(option("", "跟随 Codex 默认"));
@@ -160,27 +273,52 @@ async function loadModels() {
   if ([...els.model.options].some((item) => item.value === selected)) els.model.value = selected;
 }
 
-async function loadThreads(cursor) {
-  const request = ++state.listRequest;
-  const result = await rpc("thread/list", {
-    limit: 100, sortKey: "updated_at", sortDirection: "desc", ...(cursor ? { cursor } : {}),
-  });
-  if (request !== state.listRequest) return;
-  const threads = new Map((cursor ? state.threads : []).map((thread) => [thread.id, thread]));
-  for (const thread of result?.data || []) threads.set(thread.id, thread);
-  state.threads = [...threads.values()];
-  state.nextCursor = result?.nextCursor || null;
-  state.threadError = "";
-  renderThreads();
+async function loadProviderThreads(provider, cursor = null, forceTry = false) {
+  const info = state.providers[provider];
+  if (!info?.enabled) return;
+  if (!info.ready && !forceTry) {
+    state.errorsByProvider[provider] = info.error || `${info.label} 未就绪`;
+    renderThreads();
+    return;
+  }
+  const request = ++state.listRequestByProvider[provider];
+  try {
+    const result = await rpc("thread/list", {
+      limit: 100, sortKey: "updated_at", sortDirection: "desc", ...(cursor ? { cursor } : {}),
+    }, provider);
+    if (request !== state.listRequestByProvider[provider]) return;
+    const existing = cursor ? state.threadsByProvider[provider] : [];
+    const merged = new Map(existing.map((thread) => [thread.id, thread]));
+    for (const thread of result?.data || []) {
+      merged.set(thread.id, { ...thread, provider });
+    }
+    state.threadsByProvider[provider] = [...merged.values()];
+    state.nextCursorByProvider[provider] = result?.nextCursor || null;
+    state.errorsByProvider[provider] = "";
+    if (state.providers[provider]) {
+      state.providers[provider].ready = true;
+      state.providers[provider].error = null;
+      renderProviderStatusBadges();
+      updateConnectionUi();
+    }
+    renderThreads();
+  } catch (error) {
+    if (request !== state.listRequestByProvider[provider]) return;
+    state.errorsByProvider[provider] = error.message;
+    renderThreads();
+  }
 }
 
 async function refreshThreads() {
-  try {
-    await loadThreads();
-  } catch (error) {
-    state.threadError = error.message;
-    renderThreads();
+  await Promise.allSettled(enabledProviders().map((provider) => loadProviderThreads(provider)));
+}
+
+function visibleThreads() {
+  if (state.filterProvider !== "all") {
+    return state.threadsByProvider[state.filterProvider] || [];
   }
+  const combined = enabledProviders().flatMap((provider) => state.threadsByProvider[provider] || []);
+  return combined.sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
 }
 
 async function loadPending() {
@@ -249,10 +387,22 @@ async function pollEvents(signal) {
 }
 
 function handleBridgeEvent(event) {
-  if (event.kind === "connected") return;
+  if (event.kind === "connected") {
+    if (event.message?.providers) syncProviders({ providers: event.message.providers });
+    state.codexReady = Boolean(event.message?.codexReady);
+    return updateConnectionUi();
+  }
   if (event.kind === "bridge") {
-    state.codexReady = event.message.status === "ready";
-    if (event.message.error) toast(event.message.error);
+    if (event.message?.providers) {
+      syncProviders({ providers: event.message.providers });
+      state.codexReady = enabledProviders().some((name) => state.providers[name]?.ready);
+    } else {
+      state.codexReady = event.message.status === "ready";
+    }
+    if (event.message.status === "ready" && event.message.provider) {
+      loadProviderThreads(event.message.provider).catch(() => {});
+    }
+    if (event.message.error) toast(`${providerLabel(event.message.provider)}: ${event.message.error}`);
     return updateConnectionUi();
   }
   if (event.kind === "serverRequest") {
@@ -268,38 +418,76 @@ function handleBridgeEvent(event) {
   if (event.kind === "notification") handleNotification(event.message);
 }
 
-function handleNotification({ method, params = {} }) {
-  if (method === "turn/started" && isCurrent(params.threadId)) {
+function handleNotification({ provider = "codex", method, params = {} }) {
+  if (method === "turn/started" && isCurrent(params.threadId, provider)) {
     state.activeTurnId = params.turn?.id || state.activeTurnId;
     setBusy(true);
-  } else if (method === "turn/completed" && isCurrent(params.threadId)) {
+  } else if (method === "turn/completed" && isCurrent(params.threadId, provider)) {
     state.finishedTurnId = params.turn?.id;
     setBusy(false);
     state.activeTurnId = null;
     if (params.turn?.status === "failed" || (params.turn?.status === "declined" && params.turn?.error?.message)) {
       toast(params.turn.error?.message || "任务执行失败");
     }
-    refreshThreads();
-  } else if (method === "item/started" && isCurrent(params.threadId)) {
+    loadProviderThreads(provider).catch(() => {});
+  } else if (method === "item/started" && isCurrent(params.threadId, provider)) {
     upsertItem(params.item);
-  } else if (method === "item/completed" && isCurrent(params.threadId)) {
+  } else if (method === "item/completed" && isCurrent(params.threadId, provider)) {
     upsertItem(params.item);
-  } else if (method === "item/agentMessage/delta" && isCurrent(params.threadId)) {
-    const item = state.items.get(params.itemId) || { id: params.itemId, type: "agentMessage", text: "" };
+  } else if (method === "item/agentMessage/delta" && isCurrent(params.threadId, provider)) {
+    const item = state.items.get(params.itemId) || { id: params.itemId, type: "agentMessage", text: "", provider };
     item.text = `${item.text || ""}${params.delta || ""}`;
     upsertItem(item);
-  } else if (method === "item/commandExecution/outputDelta" && isCurrent(params.threadId)) {
+  } else if (method === "item/commandExecution/outputDelta" && isCurrent(params.threadId, provider)) {
     const item = state.items.get(params.itemId);
     if (item) { item.aggregatedOutput = `${item.aggregatedOutput || ""}${params.delta || ""}`; upsertItem(item); }
   } else if (method === "thread/name/updated") {
-    loadThreads().catch(() => {});
-    if (isCurrent(params.threadId) && params.name) { state.current.name = params.name; els.title.textContent = params.name; }
-  } else if (method === "error" && (!params.threadId || isCurrent(params.threadId))) {
-    toast(params.error?.message || params.message || `${agentName()} 返回了错误`);
+    loadProviderThreads(provider).catch(() => {});
+    if (isCurrent(params.threadId, provider) && params.name) { state.current.name = params.name; els.title.textContent = params.name; }
+  } else if (method === "error" && (!params.threadId || isCurrent(params.threadId, provider))) {
+    toast(params.error?.message || params.message || `${providerLabel(provider)} 返回了错误`);
   }
 }
 
-function isCurrent(threadId) { return Boolean(state.current && state.current.id === threadId); }
+function isCurrent(threadId, provider) {
+  if (!state.current || state.current.id !== threadId) return false;
+  return !provider || state.current.provider === provider;
+}
+
+function isActiveWriterError(error) {
+  return /already has an active writer/i.test(error?.message || "");
+}
+
+async function releaseCodexWriter(exceptThreadId = null) {
+  const held = state.subscribedCodexThreadId;
+  if (!held || held === exceptThreadId) return;
+  if (isCurrent(held, "codex") && state.busy) return;
+  state.subscribedCodexThreadId = null;
+  await rpc("thread/unsubscribe", { threadId: held }, "codex").catch(() => {});
+}
+
+async function fetchThread(thread) {
+  const provider = thread.provider || "codex";
+  if (provider === "antigravity") {
+    await releaseCodexWriter(null);
+    const result = await rpc("thread/resume", {
+      threadId: thread.id,
+      ...(thread.cwd ? { cwd: thread.cwd } : {}),
+    }, "antigravity");
+    return { result, writerLocked: false, provider };
+  }
+
+  await releaseCodexWriter(thread.id);
+  try {
+    const result = await rpc("thread/resume", { threadId: thread.id }, "codex");
+    state.subscribedCodexThreadId = thread.id;
+    return { result, writerLocked: false, provider };
+  } catch (error) {
+    if (!isActiveWriterError(error)) throw error;
+    const result = await rpc("thread/read", { threadId: thread.id, includeTurns: true }, "codex");
+    return { result, writerLocked: true, provider };
+  }
+}
 
 function upsertItem(item, shouldRender = true) {
   if (!item?.id) return;
@@ -308,31 +496,29 @@ function upsertItem(item, shouldRender = true) {
   if (shouldRender) renderMessages();
 }
 
-function applyThreadResult(result, { resetScroll = false } = {}) {
-  state.current = result.thread;
+function applyThreadResult(result, provider, { resetScroll = false, writerLocked = false } = {}) {
+  state.current = { ...result.thread, provider };
+  state.writerLocked = writerLocked;
   state.activeTurnId = null;
   if (result.reasoningEffort !== undefined) state.selectedEffort = result.reasoningEffort || "";
   state.items.clear();
   state.itemOrder = [];
   for (const turn of result.thread?.turns || []) {
-    for (const item of turn.items || []) upsertItem(item, false);
-    if (turn.status === "inProgress") state.activeTurnId = turn.id;
+    for (const item of turn.items || []) upsertItem({ ...item, provider }, false);
+    if (turn.status === "inProgress" && !writerLocked) state.activeTurnId = turn.id;
   }
   els.title.textContent = result.thread?.name || result.thread?.preview || "未命名会话";
-  setBusy(result.thread?.status?.type === "active" || Boolean(state.activeTurnId));
+  syncConversationAgentUi();
+  setBusy(!writerLocked && (result.thread?.status?.type === "active" || Boolean(state.activeTurnId)));
   renderMessages(resetScroll);
 }
 
 async function refreshCurrentThread() {
   if (!state.current || state.opening) return;
-  const targetId = state.current.id;
-  const cwd = state.current.cwd;
-  const result = await rpc("thread/resume", {
-    threadId: targetId,
-    ...(isAntigravity() && cwd ? { cwd } : {}),
-  });
-  if (!isCurrent(targetId)) return;
-  applyThreadResult(result, { resetScroll: false });
+  const snapshotThread = { ...state.current };
+  const { result, writerLocked, provider } = await fetchThread(snapshotThread);
+  if (!isCurrent(snapshotThread.id, provider)) return;
+  applyThreadResult(result, provider, { resetScroll: false, writerLocked });
   renderThreads();
 }
 
@@ -342,11 +528,8 @@ async function openThread(thread) {
   closeOverlays();
   updateSendButton();
   try {
-    const result = await rpc("thread/resume", {
-      threadId: thread.id,
-      ...(isAntigravity() && thread.cwd ? { cwd: thread.cwd } : {}),
-    });
-    applyThreadResult(result, { resetScroll: true });
+    const { result, writerLocked, provider } = await fetchThread(thread);
+    applyThreadResult(result, provider, { resetScroll: true, writerLocked });
     showConversation();
     renderThreads();
   } catch (error) {
@@ -360,34 +543,46 @@ async function openThread(thread) {
 function openNewThread() {
   closeOverlays();
   els.cwd.value ||= state.cwd;
+  if (state.filterProvider !== "all" && state.providers[state.filterProvider]?.enabled) {
+    state.newThreadProvider = state.filterProvider;
+  } else if (state.current?.provider && state.providers[state.current.provider]?.enabled) {
+    state.newThreadProvider = state.current.provider;
+  }
+  syncNewThreadFormUi();
   els.newSheet.classList.remove("hidden");
 }
 
 async function createThread() {
   const cwd = els.cwd.value.trim();
   if (!cwd) return toast("请输入电脑上的工作目录");
+  const provider = state.newThreadProvider;
+  const antigravity = provider === "antigravity";
   els.createThread.disabled = true;
   els.createThread.textContent = "正在创建…";
   try {
+    await releaseCodexWriter(null);
     const params = {
       cwd,
-      ...(!isAntigravity() && {
+      ...(!antigravity && {
         approvalPolicy: els.approval.value,
         sandbox: els.sandbox.value,
         ...(els.model.value ? { model: els.model.value } : {}),
       }),
     };
-    const result = await rpc("thread/start", params);
-    state.current = result.thread;
-    state.selectedEffort = isAntigravity() ? "" : els.effort.value;
+    const result = await rpc("thread/start", params, provider);
+    state.current = { ...result.thread, provider };
+    state.writerLocked = false;
+    state.subscribedCodexThreadId = provider === "codex" ? result.thread?.id || null : null;
+    state.selectedEffort = antigravity ? "" : els.effort.value;
     state.items.clear();
     state.itemOrder = [];
     state.activeTurnId = null;
+    syncConversationAgentUi();
     setBusy(false);
     els.title.textContent = "新会话";
     showConversation();
     closeOverlays();
-    await refreshThreads();
+    await loadProviderThreads(provider, null, true);
     if (window.matchMedia("(min-width: 760px)").matches) els.prompt.focus();
   } catch (error) {
     toast(error.message);
@@ -397,25 +592,69 @@ async function createThread() {
   }
 }
 
+async function ensureWritableCodexThread(threadId) {
+  if (state.writerLocked) {
+    try {
+      await rpc("thread/resume", { threadId }, "codex");
+      state.writerLocked = false;
+      state.subscribedCodexThreadId = threadId;
+      updateComposerHint();
+      return threadId;
+    } catch (error) {
+      if (!isActiveWriterError(error)) throw error;
+      return forkLockedCodexThread(threadId);
+    }
+  }
+  return threadId;
+}
+
+async function forkLockedCodexThread(threadId) {
+  const forked = await rpc("thread/fork", { threadId }, "codex");
+  const newId = forked.thread.id;
+  state.current = { ...state.current, ...forked.thread, id: newId, provider: "codex" };
+  state.writerLocked = false;
+  state.subscribedCodexThreadId = newId;
+  els.title.textContent = forked.thread?.name || state.current.name || state.current.preview || "分叉会话";
+  updateComposerHint();
+  loadProviderThreads("codex").catch(() => {});
+  toast("电脑端正占用原会话，已自动分叉继续");
+  return newId;
+}
+
 async function sendPrompt() {
   const text = els.prompt.value.trim();
   if (!text || els.send.disabled) return;
   if (!state.current) return openNewThread();
   state.sending = true;
   updateSendButton();
-  const threadId = state.current.id;
+  const provider = state.current.provider || "codex";
+  let threadId = state.current.id;
   try {
     const input = [{ type: "text", text }];
-    if (!isAntigravity() && state.busy && state.activeTurnId) {
-      await rpc("turn/steer", { threadId, input, expectedTurnId: state.activeTurnId });
+    if (provider === "codex" && state.busy && state.activeTurnId) {
+      await rpc("turn/steer", { threadId, input, expectedTurnId: state.activeTurnId }, "codex");
       toast("已插入当前任务");
     } else {
-      const result = await rpc("turn/start", {
+      if (provider === "codex") {
+        threadId = await ensureWritableCodexThread(threadId);
+      }
+      const startParams = {
         threadId,
         input,
-        ...(state.selectedEffort ? { effort: state.selectedEffort } : {}),
-      });
-      if (isCurrent(threadId) && result.turn?.id !== state.finishedTurnId) {
+        ...(provider === "codex" && state.selectedEffort ? { effort: state.selectedEffort } : {}),
+      };
+      let result;
+      try {
+        result = await rpc("turn/start", startParams, provider);
+      } catch (error) {
+        if (provider === "codex" && isActiveWriterError(error)) {
+          threadId = await forkLockedCodexThread(threadId);
+          result = await rpc("turn/start", { ...startParams, threadId }, "codex");
+        } else {
+          throw error;
+        }
+      }
+      if (isCurrent(threadId, provider) && result.turn?.id !== state.finishedTurnId) {
         state.activeTurnId = result.turn?.id || null;
         setBusy(true);
       }
@@ -434,7 +673,7 @@ async function stopTurn() {
   if (!state.current || !state.activeTurnId) return;
   els.stop.disabled = true;
   try {
-    await rpc("turn/interrupt", { threadId: state.current.id, turnId: state.activeTurnId });
+    await rpc("turn/interrupt", { threadId: state.current.id, turnId: state.activeTurnId }, state.current.provider);
   } catch (error) {
     toast(error.message);
   } finally {
@@ -442,27 +681,41 @@ async function stopTurn() {
   }
 }
 
+function activeFilterErrors() {
+  const targets = state.filterProvider === "all" ? enabledProviders() : [state.filterProvider];
+  return targets
+    .filter((provider) => state.errorsByProvider[provider] && !state.threadsByProvider[provider]?.length)
+    .map((provider) => `${providerLabel(provider)}: ${state.errorsByProvider[provider]}`);
+}
+
 function renderThreads() {
   els.threadList.replaceChildren();
   els.homeThreadList.replaceChildren();
-  els.sessionCount.textContent = `${state.threads.length} 个会话`;
-  if (state.threadError) {
-    for (const list of [els.threadList, els.homeThreadList]) list.append(node("div", "thread-empty", state.threadError));
+  const threads = visibleThreads();
+  els.sessionCount.textContent = `${threads.length} 个会话`;
+
+  const errors = activeFilterErrors();
+  if (errors.length && !threads.length) {
+    const message = errors.join("；");
+    for (const list of [els.threadList, els.homeThreadList]) list.append(node("div", "thread-empty", message));
+    return;
   }
-  if (!state.threads.length) {
-    if (state.threadError) return;
+  if (!threads.length) {
     els.threadList.append(node("div", "thread-empty", "还没有会话，先创建一个吧"));
     els.homeThreadList.append(node("div", "thread-empty", "还没有会话"));
     return;
   }
-  for (const thread of state.threads) els.threadList.append(threadButton(thread));
-  for (const thread of state.threads.slice(0, 5)) els.homeThreadList.append(threadButton(thread));
-  if (state.nextCursor) {
+  for (const thread of threads) els.threadList.append(threadButton(thread));
+  for (const thread of threads.slice(0, 5)) els.homeThreadList.append(threadButton(thread));
+
+  const cursors = (state.filterProvider === "all" ? enabledProviders() : [state.filterProvider])
+    .filter((provider) => state.nextCursorByProvider[provider]);
+  if (cursors.length) {
     const more = node("button", "text-button", "加载更多会话");
     more.type = "button";
     more.addEventListener("click", async () => {
       more.disabled = true;
-      try { await loadThreads(state.nextCursor); } catch (error) { toast(error.message); }
+      await Promise.allSettled(cursors.map((provider) => loadProviderThreads(provider, state.nextCursorByProvider[provider], true)));
       more.disabled = false;
     });
     els.threadList.append(more);
@@ -487,11 +740,17 @@ function renderMessages(forceScroll = false) {
 }
 
 function threadButton(thread) {
-  const button = node("button", `thread-item${thread.id === state.current?.id ? " active" : ""}`);
+  const active = isCurrent(thread.id, thread.provider);
+  const button = node("button", `thread-item${active ? " active" : ""}`);
   button.type = "button";
   const main = node("span", "thread-row-main");
   main.append(node("strong", "thread-row-title", thread.name || thread.preview || "未命名会话"));
-  main.append(node("span", "thread-row-meta", `${shortPath(thread.cwd)} · ${relativeTime(thread.updatedAt)}`));
+  const meta = node("span", "thread-row-meta");
+  if (isDualMode()) {
+    meta.append(node("span", `thread-agent-pill${thread.provider === "antigravity" ? " antigravity" : ""}`, providerLabel(thread.provider)));
+  }
+  meta.append(document.createTextNode(`${shortPath(thread.cwd)} · ${relativeTime(thread.updatedAt)}`));
+  main.append(meta);
   const side = node("span", "thread-row-side");
   if (thread.status?.type === "active") side.append(node("span", "thread-status", "运行中"));
   side.append(node("span", "thread-chevron", "›"));
@@ -516,7 +775,8 @@ function itemElement(item) {
   }
   if (item.type === "agentMessage") {
     const root = node("article", "message agent");
-    root.append(node("div", "message-label", agentName().toUpperCase()));
+    const label = providerLabel(item.provider || currentProvider()).toUpperCase();
+    root.append(node("div", "message-label", label));
     const content = node("div", "message-text");
     renderRichText(content, item.text || "");
     root.append(content);
@@ -573,12 +833,13 @@ function renderApproval() {
   els.approvalSheet.classList.remove("hidden");
   els.approvalContent.replaceChildren();
   const params = request.params || {};
+  const reqProvider = request.provider || (request.method === "session/request_permission" ? "antigravity" : "codex");
   els.approvalContent.append(node("div", "approval-icon", "!"));
 
-  if (isAntigravity() && request.method === "session/request_permission") {
-    els.approvalContent.append(node("p", "eyebrow", "PERMISSION REQUIRED"), node("h2", "", "Antigravity 请求权限"));
+  if (request.method === "session/request_permission") {
+    els.approvalContent.append(node("p", "eyebrow", "ANTIGRAVITY PERMISSION"), node("h2", "", "Antigravity 请求权限"));
     const contextParts = [
-      params.sessionName && (!state.current || state.current.id !== params.sessionId) ? `会话：${params.sessionName}` : "",
+      params.sessionName && !isCurrent(params.sessionId, "antigravity") ? `会话：${params.sessionName}` : "",
       params.cwd ? `工作目录：${params.cwd}` : "",
     ].filter(Boolean);
     if (contextParts.length) els.approvalContent.append(node("p", "approval-copy", contextParts.join(" · ")));
@@ -598,7 +859,7 @@ function renderApproval() {
     }
     els.approvalContent.append(actions);
   } else if (request.method === "item/commandExecution/requestApproval") {
-    els.approvalContent.append(node("p", "eyebrow", "APPROVAL REQUIRED"), node("h2", "", "允许执行命令？"));
+    els.approvalContent.append(node("p", "eyebrow", "CODEX APPROVAL"), node("h2", "", "允许执行命令？"));
     if (params.reason) els.approvalContent.append(node("p", "approval-copy", params.reason));
     els.approvalContent.append(node("pre", "approval-code", `${params.command || "未知命令"}${params.cwd ? `\n\n工作目录：${params.cwd}` : ""}`));
     const actions = node("div", "approval-actions three");
@@ -607,7 +868,7 @@ function renderApproval() {
     actions.append(approvalButton("本会话允许", "", () => answerRequest(request, { decision: "acceptForSession" })));
     els.approvalContent.append(actions);
   } else if (request.method === "item/fileChange/requestApproval") {
-    els.approvalContent.append(node("p", "eyebrow", "FILE CHANGE"), node("h2", "", "允许修改文件？"));
+    els.approvalContent.append(node("p", "eyebrow", "CODEX FILE CHANGE"), node("h2", "", "允许修改文件？"));
     els.approvalContent.append(node("p", "approval-copy", params.reason || "Codex 请求写入当前沙箱范围之外的文件。"));
     const fileItem = state.items.get(params.itemId);
     const changes = (fileItem?.changes || []).map((change) => `${change.kind?.type || change.type || "修改"}  ${change.path || ""}`).join("\n");
@@ -642,7 +903,7 @@ function renderApproval() {
     els.approvalContent.append(actions);
   } else {
     els.approvalContent.append(node("p", "eyebrow", "UNSUPPORTED REQUEST"), node("h2", "", "需要在电脑端处理"));
-    els.approvalContent.append(node("p", "approval-copy", `当前版本还不能处理 ${request.method}，请在电脑上的 ${agentName()} 客户端完成。`));
+    els.approvalContent.append(node("p", "approval-copy", `当前版本还不能处理 ${request.method}，请在电脑上的 ${providerLabel(reqProvider)} 客户端完成。`));
   }
 }
 
@@ -694,30 +955,57 @@ function approvalButton(text, className, handler) {
   return button;
 }
 
+function updateComposerHint() {
+  if (state.busy) {
+    $("#composerHint").textContent = isCurrentAntigravity() ? "正在工作" : "正在工作，可以继续插话";
+  } else if (state.writerLocked) {
+    $("#composerHint").textContent = "电脑端正占用此会话，发送将自动分叉继续";
+  } else {
+    $("#composerHint").textContent = "发送消息";
+  }
+}
+
 function setBusy(value) {
   state.busy = value;
   els.working.classList.toggle("hidden", !value);
   els.stop.classList.toggle("hidden", !value);
   els.statusDot.classList.toggle("busy", value);
-  $("#composerHint").textContent = !value ? "发送消息" : isAntigravity() ? "正在工作" : "正在工作，可以继续插话";
+  updateComposerHint();
   updateSendButton();
   updateConnectionUi();
 }
 
 function updateSendButton() {
-  els.send.disabled = state.sending || state.opening || (isAntigravity() && state.busy);
+  els.send.disabled = state.sending || state.opening || (isCurrentAntigravity() && state.busy);
 }
 
 function updateConnectionUi() {
-  const online = state.connected && state.codexReady;
+  const activeProv = state.current?.provider;
+  const currentReady = activeProv ? Boolean(state.providers[activeProv]?.ready) : state.codexReady;
+  const online = state.connected && currentReady;
   els.statusDot.classList.toggle("online", online && !state.busy);
   els.statusDot.classList.toggle("busy", online && state.busy);
-  els.drawerDot.classList.toggle("online", online);
-  const label = !state.connected ? "已断线" : !state.codexReady ? `${agentName()} 未就绪` : state.busy ? "正在工作" : "已连接";
+  els.drawerDot.classList.toggle("online", state.connected && state.codexReady);
+
+  let label;
+  if (!state.connected) {
+    label = "已断线";
+  } else if (activeProv && !state.providers[activeProv]?.ready) {
+    label = `${providerLabel(activeProv)} 未就绪`;
+  } else if (!state.codexReady) {
+    label = "后端未就绪";
+  } else if (state.busy) {
+    label = `${providerLabel(currentProvider())} 工作中`;
+  } else if (activeProv) {
+    label = `${providerLabel(activeProv)} 已连接`;
+  } else {
+    label = "已连接";
+  }
+
   els.statusText.textContent = label;
-  els.homeStatus.textContent = label;
-  els.homeStatus.classList.toggle("online", online && !state.busy);
-  els.homeStatus.classList.toggle("busy", online && state.busy);
+  els.homeStatus.textContent = !state.connected ? "已断线" : state.codexReady ? "已连接" : "未就绪";
+  els.homeStatus.classList.toggle("online", state.connected && state.codexReady && !state.busy);
+  els.homeStatus.classList.toggle("busy", state.connected && state.busy);
 }
 
 function showConversation() {
@@ -745,6 +1033,7 @@ function closeOverlays(includeApproval = true) {
 }
 
 function disconnect() {
+  releaseCodexWriter(null).catch(() => {});
   state.eventAbort?.abort();
   clearTimeout(state.reconnectTimer);
   localStorage.removeItem("remoteCodexToken");
@@ -766,8 +1055,8 @@ function syncViewportHeight() {
   document.documentElement.style.setProperty("--app-height", `${height}px`);
 }
 
-async function rpc(method, params = {}) {
-  const response = await api("/api/rpc", { method: "POST", body: { method, params } });
+async function rpc(method, params = {}, provider = currentProvider()) {
+  const response = await api("/api/rpc", { method: "POST", body: { provider, method, params } });
   return response.result;
 }
 

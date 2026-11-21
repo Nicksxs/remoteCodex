@@ -97,6 +97,11 @@ input, textarea, select { font-size: 16px; }
 .host-card-copy strong, .host-card-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .host-card-copy strong { margin-bottom: 5px; font-size: 14px; }
 .host-card-copy span { color: var(--muted); font-size: 11px; }
+.provider-status-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.provider-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 10px; font-weight: 650; }
+.provider-badge i { width: 6px; height: 6px; border-radius: 50%; background: #697166; }
+.provider-badge.ready { color: var(--text); }
+.provider-badge.ready i { background: var(--accent); }
 .connection-pill { padding: 6px 8px; border-radius: 999px; background: var(--surface-3); color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .connection-pill.online { background: rgba(201, 245, 111, .1); color: var(--accent); }
 .connection-pill.busy { background: rgba(255, 208, 120, .1); color: var(--warning); }
@@ -110,6 +115,13 @@ input, textarea, select { font-size: 16px; }
 
 .section-heading { min-height: 44px; display: flex; align-items: center; justify-content: space-between; }
 .section-heading h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
+.segmented-tabs { margin: 8px 0 6px; padding: 4px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
+.segmented-tabs.two { grid-template-columns: repeat(2, 1fr); margin-top: 4px; background: #0b0e0a; }
+.segmented-tabs.drawer-tabs { margin: 10px max(16px, var(--safe-right)) 2px max(16px, var(--safe-left)); }
+.segment-button { min-height: 36px; border: 0; border-radius: 9px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 650; }
+.segment-button.active { background: var(--surface-3); color: var(--accent); }
+.thread-agent-pill { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 6px; background: var(--surface-3); color: #d5e2ce; font-size: 10px; font-weight: 650; vertical-align: 1px; }
+.thread-agent-pill.antigravity { background: rgba(201, 245, 111, .12); color: var(--accent); }
 .text-button { min-height: 44px; padding: 0 6px; border: 0; background: transparent; color: var(--accent); font-size: 13px; }
 .danger-text { color: var(--danger); }
 .thread-list { min-height: 0; }
@@ -180,6 +192,7 @@ input, textarea, select { font-size: 16px; }
   background: var(--bg);
 }
 .page-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; transform: translateX(-102%); transition: transform .22s cubic-bezier(.2, .75, .25, 1); }
+.page-panel:has(.drawer-tabs:not(.hidden)) { grid-template-rows: auto auto minmax(0, 1fr) auto; }
 .page-panel.open { transform: translateX(0); }
 .panel-header, .form-page-header {
   min-height: calc(64px + var(--safe-top));
