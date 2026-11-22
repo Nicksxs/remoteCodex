@@ -188,7 +188,7 @@ const requestHandler = async (request, response) => {
           eventTransport: args.remote ? "poll" : "sse",
           eventCursor: events.sequence,
           eventSession,
-          version: "0.1.0",
+          version: "0.2.0",
         });
       }
       if (request.method === "GET" && url.pathname === "/api/events") return openEventStream(request, response);

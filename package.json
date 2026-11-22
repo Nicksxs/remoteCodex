@@ -1,9 +1,25 @@
 {
   "name": "remote-codex",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
   "type": "module",
-  "description": "A mobile-first remote control for a local Codex app-server",
+  "description": "Zero-dependency mobile PWA remote control for local Codex and Antigravity agents",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nicksxs/remoteCodex.git"
+  },
+  "homepage": "https://github.com/Nicksxs/remoteCodex",
+  "bugs": {
+    "url": "https://github.com/Nicksxs/remoteCodex/issues"
+  },
+  "keywords": [
+    "codex",
+    "antigravity",
+    "acp",
+    "agent",
+    "pwa",
+    "remote-control",
+    "cloudflare-tunnel"
+  ],
   "scripts": {
     "start": "node src/server.mjs",
     "lan": "node src/server.mjs --lan",

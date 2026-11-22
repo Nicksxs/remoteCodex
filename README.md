@@ -1,16 +1,16 @@
 # Remote Codex
 
-参考 dsh-go 的移动工作流，为 Codex 做的手机远程控制台。电脑运行官方 `codex app-server`，手机通过一个带配对令牌的轻量桥接服务连接；无需把代码仓库、Codex 登录凭据或 API Key 放到手机里。
+参考 dsh-go 的移动工作流，为本机 Coding Agent（**OpenAI Codex** 与 **Google Antigravity**）做的零依赖手机远程控制台。电脑运行官方 `codex app-server` 与 `agy acp`，手机通过带随机配对令牌的轻量桥接服务连接；无需把代码仓库、登录凭据或 API Key 放到手机里。
 
-当前版本是可安装 PWA，适用于 Android 和 iPhone：发起/继续会话、查看流式消息和工具过程、插话、停止任务，以及在手机上处理命令和文件写入审批。
+当前版本（`0.2.0`）是可安装 PWA，适用于 Android 和 iPhone：默认同时接入本机 Codex 与 Antigravity，支持发起/继续会话、查看流式消息与思考/计划/工具过程、运行中插话（Codex）、停止任务，以及在手机上处理命令、文件写入与工具权限审批。
 
 ## 快速开始
 
-要求：Node.js 20+，并且电脑已安装、登录 Codex CLI。
+要求：Node.js 20+，电脑已安装并登录 Codex CLI 或 Antigravity CLI（`agy`）中的至少一个。
 
 ```bash
-git clone <your-repository-url> remote-codex
-cd remote-codex
+git clone https://github.com/Nicksxs/remoteCodex.git
+cd remoteCodex
 npm start
 ```
 
@@ -22,7 +22,7 @@ npm run lan
 
 终端会打印配对二维码和一个带 `#token=...` 的地址。用手机扫码或在浏览器打开地址即可完成配对。二维码完全在本机生成；令牌位于 URL fragment 中，不会随静态页面请求发送给服务器，首次配对后只保存在该浏览器的本地存储中。
 
-打开会话列表，点“新建会话”，填写电脑上的绝对工作目录，然后发送任务。Safari 或 Chrome 中可使用“添加到主屏幕”获得接近原生 App 的体验。
+打开会话列表，点“新建会话”，选择 `Codex` 或 `Antigravity` 并填写电脑上的绝对工作目录，即可发送任务。Safari 或 Chrome 中可使用“添加到主屏幕”获得接近原生 App 的体验。
 
 ## 从外网远程连接
 
@@ -45,7 +45,7 @@ npm run remote -- --allowed-mail you@example.com
 
 ## 连接 Antigravity 与 Codex（默认双端同时接入）
 
-默认启动（`npm start` / `npm run lan` / `npm run remote`）会**同时尝试连接本机 Codex 与 Antigravity**；只要任意一端可用即可正常启动，手机端可按标签筛选历史会话，也可在“新建会话”时直接选择使用 Codex 还是 Antigravity。
+默认启动（`npm start` / `npm run lan` / `npm run remote`）会**同时尝试连接本机 Codex 与 Antigravity**；只要任意一端可用即可正常启动，手机端可按标签（`全部 / Codex / Antigravity`）筛选历史会话，也可在“新建会话”时直接切换后端。
 
 如需启用 Antigravity，请在电脑上安装支持 ACP 的 [Antigravity CLI](https://antigravity.google/docs/cli/acp)，确认 `agy acp --help` 可用。首次使用时运行 `agy acp --login`（或 `agy`）完成登录。
 
@@ -57,7 +57,7 @@ npm run codex -- --lan                      # 仅连接 Codex
 npm run antigravity -- --lan                # 仅连接 Antigravity
 ```
 
-当电脑桌面端（如 `ChatGPT.app` / Codex Desktop）正占用某条历史 Codex 会话的写入锁（`already has an active writer`）时，手机端会自动退回只读打开完整历史，并在你发送新消息时自动分叉（`thread/fork`）继续，无需先退出桌面客户端。
+当电脑桌面端（如 `ChatGPT.app` / Codex Desktop）正占用某条历史 Codex 会话的写入锁（`already has an active writer`）时，手机端会自动退回只读（`thread/read`）打开完整历史，并在发送新消息时自动分叉（`thread/fork`）继续，无需先退出桌面客户端。
 
 若要接管已经在 Antigravity 桌面 App 中运行的会话，请在桌面端启用 [Google Remote Control](https://antigravity.google/docs/remote-control/)，然后在手机上用同一 Google 账号打开 [Antigravity 网页](https://antigravity.google.com/)。
 
@@ -76,7 +76,7 @@ npm run antigravity -- --lan                # 仅连接 Antigravity
 --token <secret>      固定配对令牌（也可用 REMOTE_CODEX_TOKEN）
 --tls-cert cert.pem   HTTPS 证书
 --tls-key key.pem     HTTPS 私钥
---verbose             输出 Codex app-server 日志
+--verbose             输出后端与隧道日志
 --no-qr               不在终端输出二维码
 ```
 
@@ -88,10 +88,10 @@ node src/server.mjs --lan --port 4173 --cwd /Users/me/dev/project
 
 ## 安全说明
 
-- 默认仅监听本机；必须显式使用 `--lan` 才开放给局域网。
+- 默认仅监听本机回环地址；必须显式使用 `--lan`（或非回环 `--host`）才开放给局域网。
 - 每次启动默认生成 192-bit 随机配对令牌，所有 `/api/*` 请求必须携带 Bearer Token。
-- 手机端只被允许调用会话、消息、中断和审批相关 RPC。`thread/shellCommand`、`command/exec`、删除会话等高风险接口没有暴露。
-- 审批默认使用 `on-request`，新会话默认采用 `workspace-write` 沙箱。界面会对 `danger-full-access` 给出额外警告。
+- 手机端只被允许调用会话、消息、分叉、中断和审批相关 RPC。`thread/shellCommand`、`command/exec`、删除会话等高风险接口均未暴露。
+- Codex 新会话默认使用 `on-request` 审批策略和 `workspace-write` 沙箱；界面会对 `danger-full-access` 给出额外警告。Antigravity 审批在手机端仅开放单次允许/拒绝（`allow_once` / `reject_once`）。
 - `--lan` 的普通 HTTP 只适用于可信局域网。跨公网使用时，请在反向代理或私有组网入口终止 TLS，或者提供 `--tls-cert` / `--tls-key`。不要直接把明文端口映射到公网。
 - `--remote` 只把本机 `127.0.0.1` 服务交给出站 HTTPS 隧道，并自动改用兼容 Quick Tunnel 的长轮询事件通道；不会开放路由器入站端口。
 - 未配置 `--allowed-mail` 时，远程配对 URL 和令牌本身就是访问凭据。不要把它贴到公开聊天、截图或日志中；停止进程即可令临时地址失效。
@@ -100,42 +100,43 @@ node src/server.mjs --lan --port 4173 --cwd /Users/me/dev/project
 ## 架构
 
 ```text
-手机 PWA
-  │  HTTPS / SSE / JSON（配对令牌）
+手机 PWA（public/app.js）
+  │  HTTPS / SSE 或长轮询 / JSON（Bearer 配对令牌）
   ▼
 Remote Codex bridge（Node.js，无第三方运行时依赖）
-  │  stdin/stdout JSON-RPC
-  ▼
-codex app-server
-  │
-  ▼
-本机工作区 + 本机 Codex 登录
+  ├── stdin/stdout JSON-RPC ──▶ codex app-server
+  └── stdin/stdout ACP v1   ──▶ agy acp（Antigravity CLI）
+                                  │
+                                  ▼
+                      本机工作区 + 本机 Agent 登录凭据
 ```
 
-桥接层负责协议握手、RPC 白名单、SSE 事件转发和待审批请求保留。手机断线后重新连接，未处理的审批仍可通过 `/api/pending` 恢复。
+桥接层负责多后端生命周期与故障自愈、RPC 白名单、SSE/长轮询双模事件游标同步以及命名空间隔离的待审批请求保留。手机锁屏断线后重新连接，当前会话与未处理的审批均会自动恢复。
 
 ## 开发
 
-项目没有生产依赖：
+项目没有第三方生产依赖：
 
 ```bash
-npm test
-node --check src/server.mjs
-node --check public/app.js
+npm run check
 ```
 
-主要目录：
+主要模块：
 
-- `src/codex-client.mjs`：Codex app-server 双向 JSON-RPC 客户端
-- `src/server.mjs`：鉴权桥接、SSE、RPC 白名单和静态服务
-- `public/`：手机优先 PWA
-- `test/`：协议和安全单元测试
+- `src/stdio-rpc.mjs`：通用子进程 `stdio` 双向行分隔 JSON-RPC 客户端
+- `src/codex-client.mjs`：Codex `app-server` 握手与自动重连封装
+- `src/antigravity-client.mjs`：Antigravity ACP v1 会话、思考/计划流、历史回放与权限适配层
+- `src/event-buffer.mjs`：带游标断层检测的内存事件环形缓冲，支撑 SSE 与长轮询
+- `src/remote-tunnel.mjs`：`cloudflared` Quick Tunnel 生命周期管理
+- `src/server.mjs`：多后端路由、鉴权、RPC 白名单、审批隔离与静态资源服务
+- `public/`：手机优先的全屏 PWA
+- `test/`：协议适配、安全、隧道与 HTTP 桥接集成测试
 
 ## 当前范围
 
-已实现：会话列表、新建/恢复会话、模型与思考深度选择、流式回复、命令/文件过程卡片、插话、停止、命令审批、文件审批、`request_user_input` 回答、断线重连和 PWA 外壳。
+已实现：Codex 与 Antigravity 双后端同时接入、会话列表与游标分页、新建/恢复会话、桌面锁冲突无感只读与自动分叉（Codex）、模型与思考深度选择、流式回复、思考/计划/命令/文件/工具过程卡片、插话、停止、命令与权限审批、`request_user_input` 回答、锁屏重连同步和 PWA 外壳。
 
-下一阶段适合加入图片附件、语音输入、系统推送、多主机管理，以及 Flutter 原生壳。当前版本刻意不在手机本地运行 Codex，也不远程暴露任意 Shell。
+下一阶段适合加入图片附件、语音输入、系统推送、多主机管理，以及原生客户端外壳。当前版本刻意不在手机本地运行 Agent，也不远程暴露任意 Shell。
 
 ## 致谢与许可
 

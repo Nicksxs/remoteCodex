@@ -54,7 +54,7 @@ export class AntigravityClient extends EventEmitter {
         const init = await this.call("initialize", {
           protocolVersion: 1,
           clientCapabilities: {},
-          clientInfo: { name: "remote-codex", version: "0.1.0" },
+          clientInfo: { name: "remote-codex", version: "0.2.0" },
         }, 15_000);
         if (init.protocolVersion !== 1) throw new Error("此版本需要 Antigravity ACP v1");
         this.capabilities = init.agentCapabilities || {};
