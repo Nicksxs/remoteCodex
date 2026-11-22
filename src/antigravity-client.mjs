@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { isAbsolute } from "node:path";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { StdioRpcClient } from "./stdio-rpc.mjs";
 
 export const antigravityMethods = new Set([
@@ -189,6 +191,14 @@ export class AntigravityClient extends EventEmitter {
     session.replaying = replayed;
     try {
       await this.call("session/load", { sessionId: session.id, cwd: session.cwd, mcpServers: [] });
+      if (!replayed.length) {
+        const diskItems = await loadLocalTranscript(session.id);
+        if (diskItems.length) {
+          replayed.push(...diskItems);
+          const firstUser = diskItems.find((entry) => entry.type === "userMessage")?.content?.find((part) => part.type === "text")?.text;
+          if (firstUser) session.preview ||= firstUser.slice(0, 120);
+        }
+      }
       session.items = replayed;
       session.loaded = true;
       session.everLoaded = true;
@@ -415,4 +425,66 @@ function planMarker(status) {
 
 function httpError(statusCode, message) {
   return Object.assign(new Error(message), { statusCode });
+}
+
+async function loadLocalTranscript(sessionId) {
+  if (typeof sessionId !== "string" || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return [];
+  const logsDir = join(homedir(), ".gemini", "antigravity", "brain", sessionId, ".system_generated", "logs");
+  let raw = "";
+  for (const filename of ["transcript_full.jsonl", "transcript.jsonl"]) {
+    try {
+      raw = await readFile(join(logsDir, filename), "utf8");
+      if (raw) break;
+    } catch {
+      // Try next transcript variant.
+    }
+  }
+  if (!raw) return [];
+  const items = [];
+  const lines = raw.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    let step;
+    try {
+      step = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const stepId = step.step_index ?? index;
+    if (step.type === "USER_INPUT") {
+      const text = extractUserRequest(step.content);
+      if (!text) continue;
+      items.push({ id: `transcript:${stepId}:user`, type: "userMessage", content: [{ type: "text", text }] });
+    } else if (step.type === "PLANNER_RESPONSE") {
+      if (typeof step.thinking === "string" && step.thinking.trim()) {
+        items.push({ id: `transcript:${stepId}:thinking`, type: "reasoning", content: [step.thinking.trim()] });
+      }
+      if (Array.isArray(step.tool_calls)) {
+        step.tool_calls.forEach((call, callIndex) => {
+          const title = call?.name || call?.function?.name || "工具调用";
+          const rawInput = call?.args ?? call?.arguments ?? call?.function?.arguments;
+          items.push({
+            id: `transcript:${stepId}:tool:${callIndex}`,
+            type: "antigravityTool",
+            status: "completed",
+            details: toolDetails({ title, rawInput }),
+          });
+        });
+      }
+      if (typeof step.content === "string" && step.content.trim()) {
+        items.push({ id: `transcript:${stepId}:agent`, type: "agentMessage", text: step.content.trim() });
+      }
+    }
+  }
+  return items;
+}
+
+function extractUserRequest(content) {
+  if (typeof content !== "string" || !content.trim()) return "";
+  const matches = [...content.matchAll(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/g)]
+    .map((match) => match[1].trim())
+    .filter(Boolean);
+  if (matches.length) return matches.join("\n\n");
+  return content.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, "").trim();
 }

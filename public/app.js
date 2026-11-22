@@ -48,10 +48,11 @@ async function boot() {
 }
 
 function bindUi() {
-  $("#sessionsButton").addEventListener("click", openDrawer);
+  $("#sessionsButton").addEventListener("click", handlePrimaryNavButton);
   $("#threadHeading").addEventListener("click", openDrawer);
   $("#viewAllThreadsButton").addEventListener("click", openDrawer);
   $("#closeDrawerButton").addEventListener("click", closeOverlays);
+  window.addEventListener("popstate", handlePopState);
   $("#newThreadButton").addEventListener("click", openNewThread);
   $("#drawerNewButton").addEventListener("click", openNewThread);
   $("#welcomeStartButton").addEventListener("click", openNewThread);
@@ -706,7 +707,7 @@ function renderThreads() {
     return;
   }
   for (const thread of threads) els.threadList.append(threadButton(thread));
-  for (const thread of threads.slice(0, 5)) els.homeThreadList.append(threadButton(thread));
+  for (const thread of threads.slice(0, 20)) els.homeThreadList.append(threadButton(thread));
 
   const cursors = (state.filterProvider === "all" ? enabledProviders() : [state.filterProvider])
     .filter((provider) => state.nextCursorByProvider[provider]);
@@ -735,6 +736,9 @@ function renderMessages(forceScroll = false) {
     element.dataset.itemId = id;
     if (openIds.has(id) && "open" in element) element.open = true;
     els.messageList.append(element);
+  }
+  if (!els.messageList.childElementCount) {
+    els.messageList.append(node("div", "thread-empty", "还没有消息，在下方输入任务开始对话"));
   }
   if (shouldStick) requestAnimationFrame(scrollToLatest);
 }
@@ -1008,10 +1012,61 @@ function updateConnectionUi() {
   els.homeStatus.classList.toggle("busy", state.connected && state.busy);
 }
 
+function syncTopNavButton() {
+  const inConversation = Boolean(state.current && !els.conversation.classList.contains("hidden"));
+  $("#menuIcon").classList.toggle("hidden", inConversation);
+  $("#backIcon").classList.toggle("hidden", !inConversation);
+  $("#sessionsButton").setAttribute("aria-label", inConversation ? "返回会话列表" : "打开会话列表");
+}
+
+function handlePrimaryNavButton() {
+  if (state.current && !els.conversation.classList.contains("hidden")) {
+    if (history.state?.view === "conversation") history.back();
+    else showHome();
+    return;
+  }
+  openDrawer();
+}
+
+function handlePopState() {
+  if (!els.newSheet.classList.contains("hidden") || els.drawer.classList.contains("open")) {
+    closeOverlays();
+    return;
+  }
+  if (state.current && !els.conversation.classList.contains("hidden")) {
+    showHome({ fromPopstate: true });
+  }
+}
+
+function showHome({ fromPopstate = false } = {}) {
+  releaseCodexWriter(null).catch(() => {});
+  state.current = null;
+  state.writerLocked = false;
+  state.activeTurnId = null;
+  state.items.clear();
+  state.itemOrder = [];
+  els.title.textContent = "Remote Codex";
+  els.welcome.classList.remove("hidden");
+  els.conversation.classList.add("hidden");
+  els.composer.classList.add("hidden");
+  closeOverlays();
+  setBusy(false);
+  syncTopNavButton();
+  renderThreads();
+  if (!fromPopstate && history.state?.view === "conversation") {
+    history.replaceState({ view: "home" }, "");
+  }
+}
+
 function showConversation() {
+  const wasHome = els.conversation.classList.contains("hidden");
   els.welcome.classList.add("hidden");
   els.conversation.classList.remove("hidden");
   els.composer.classList.remove("hidden");
+  syncTopNavButton();
+  if (wasHome && history.state?.view !== "conversation") {
+    history.pushState({ view: "conversation", id: state.current?.id || "" }, "");
+  }
 }
 
 function showPairing() { els.pairing.classList.remove("hidden"); }

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { networkInterfaces } from "node:os";
@@ -32,7 +34,7 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 }
 const token = args.token || process.env.REMOTE_CODEX_TOKEN || randomBytes(24).toString("base64url");
 const workspaceCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
-const codexCommand = args.codex || process.env.REMOTE_CODEX_BIN || "codex";
+const codexCommand = resolveCodexCommand(args.codex || process.env.REMOTE_CODEX_BIN);
 const codexArgs = process.env.REMOTE_CODEX_ARGS ? JSON.parse(process.env.REMOTE_CODEX_ARGS) : undefined;
 const agyArgs = process.env.REMOTE_CODEX_AGY_ARGS ? JSON.parse(process.env.REMOTE_CODEX_AGY_ARGS) : undefined;
 const rawAgent = args.agent || "all";
@@ -429,6 +431,35 @@ function isPlainObject(value) {
 
 function isLoopbackHost(value) {
   return value === "127.0.0.1" || value === "::1" || value === "localhost";
+}
+
+function resolveCodexCommand(explicit) {
+  if (explicit) return explicit;
+  const bundled = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
+  if (process.platform !== "darwin" || !existsSync(bundled)) return "codex";
+  const pathVersion = readCliVersion("codex");
+  const bundledVersion = readCliVersion(bundled);
+  if (bundledVersion && (!pathVersion || compareSemver(bundledVersion, pathVersion) > 0)) {
+    return bundled;
+  }
+  return "codex";
+}
+
+function readCliVersion(command) {
+  try {
+    const out = execFileSync(command, ["--version"], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
+    const match = out.match(/(\d+)\.(\d+)\.(\d+)/);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  } catch {
+    return null;
+  }
+}
+
+function compareSemver(left, right) {
+  for (let i = 0; i < 3; i += 1) {
+    if (left[i] !== right[i]) return left[i] - right[i];
+  }
+  return 0;
 }
 
 async function loadTls(options) {
