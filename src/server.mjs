@@ -6,8 +6,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { networkInterfaces } from "node:os";
-import { dirname, extname, resolve, sep } from "node:path";
+import { homedir, networkInterfaces } from "node:os";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServer } from "./codex-client.mjs";
 import { AntigravityClient, antigravityMethods } from "./antigravity-client.mjs";
@@ -36,7 +36,10 @@ const token = args.token || process.env.REMOTE_CODEX_TOKEN || randomBytes(24).to
 const workspaceCwd = resolve(args.cwd || process.env.REMOTE_CODEX_CWD || process.cwd());
 const codexCommand = resolveCodexCommand(args.codex || process.env.REMOTE_CODEX_BIN);
 const codexArgs = process.env.REMOTE_CODEX_ARGS ? JSON.parse(process.env.REMOTE_CODEX_ARGS) : undefined;
-const agyArgs = process.env.REMOTE_CODEX_AGY_ARGS ? JSON.parse(process.env.REMOTE_CODEX_AGY_ARGS) : undefined;
+const agyArgs = resolveAgyArgs(
+  process.env.REMOTE_CODEX_AGY_ARGS ? JSON.parse(process.env.REMOTE_CODEX_AGY_ARGS) : undefined,
+  args["agy-app-data-dir"] || process.env.REMOTE_CODEX_AGY_APP_DATA_DIR,
+);
 const rawAgent = args.agent || "all";
 const agentMode = rawAgent === "both" ? "all" : rawAgent;
 if (agentMode !== "all" && agentMode !== "codex" && agentMode !== "antigravity") {
@@ -443,6 +446,15 @@ function resolveCodexCommand(explicit) {
     return bundled;
   }
   return "codex";
+}
+
+function resolveAgyArgs(explicitArgs, appDataDir) {
+  if (explicitArgs) return explicitArgs;
+  if (appDataDir) return ["acp", "--app-data-dir", appDataDir];
+  if (existsSync(join(homedir(), ".gemini", "antigravity", "conversations"))) {
+    return ["acp", "--app-data-dir", "antigravity"];
+  }
+  return ["acp"];
 }
 
 function readCliVersion(command) {

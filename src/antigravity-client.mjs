@@ -397,8 +397,10 @@ function snapshot(session, includeTurns = false) {
   };
 }
 
-function toolDetails({ title, kind, rawInput, locations, content }) {
-  return Object.fromEntries(Object.entries({ title, kind, rawInput, locations, content }).filter(([, value]) => value != null));
+function toolDetails({ title, name, kind, rawInput, locations, content }) {
+  return Object.fromEntries(
+    Object.entries({ title: title ?? name, kind, rawInput, locations, content }).filter(([, value]) => value != null),
+  );
 }
 
 function contentPart(content) {
