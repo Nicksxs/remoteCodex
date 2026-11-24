@@ -811,18 +811,178 @@ function activity(label, body, failed = false) {
 }
 
 function renderRichText(container, text) {
-  const parts = text.split("```");
-  parts.forEach((part, index) => {
-    if (index % 2) {
+  const lines = String(text || "").replaceAll("\r\n", "\n").split("\n");
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const fence = line.match(/^```([^\s`]*)/);
+    if (fence) {
+      const lang = fence[1] || "";
+      const codeLines = [];
+      i += 1;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length && lines[i].startsWith("```")) i += 1;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
-      code.textContent = part.replace(/^\w+\n/, "");
+      if (lang) code.dataset.lang = lang;
+      code.textContent = codeLines.join("\n");
       pre.append(code);
       container.append(pre);
-    } else {
-      for (const paragraph of part.split(/\n{2,}/)) if (paragraph) container.append(node("p", "", paragraph));
+      continue;
     }
-  });
+
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const h = document.createElement(`h${heading[1].length}`);
+      appendInlineMarkdown(h, heading[2].trim());
+      container.append(h);
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      container.append(document.createElement("hr"));
+      i += 1;
+      continue;
+    }
+
+    if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const wrap = node("div", "table-wrap");
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      for (const cell of splitTableRow(line)) {
+        const th = document.createElement("th");
+        appendInlineMarkdown(th, cell);
+        headerRow.append(th);
+      }
+      thead.append(headerRow);
+      table.append(thead);
+      i += 2;
+      const tbody = document.createElement("tbody");
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|") && !lines[i].startsWith("```")) {
+        const tr = document.createElement("tr");
+        for (const cell of splitTableRow(lines[i])) {
+          const td = document.createElement("td");
+          appendInlineMarkdown(td, cell);
+          tr.append(td);
+        }
+        tbody.append(tr);
+        i += 1;
+      }
+      table.append(tbody);
+      wrap.append(table);
+      container.append(wrap);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quote = document.createElement("blockquote");
+      const quoteLines = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      renderRichText(quote, quoteLines.join("\n"));
+      container.append(quote);
+      continue;
+    }
+
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const ul = document.createElement("ul");
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        const li = document.createElement("li");
+        appendInlineMarkdown(li, lines[i].replace(/^\s*[-*+]\s+/, ""));
+        ul.append(li);
+        i += 1;
+      }
+      container.append(ul);
+      continue;
+    }
+
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const ol = document.createElement("ol");
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        const li = document.createElement("li");
+        appendInlineMarkdown(li, lines[i].replace(/^\s*\d+\.\s+/, ""));
+        ol.append(li);
+        i += 1;
+      }
+      container.append(ol);
+      continue;
+    }
+
+    const paraLines = [];
+    while (
+      i < lines.length
+      && lines[i].trim()
+      && !lines[i].startsWith("```")
+      && !/^(#{1,4})\s+/.test(lines[i])
+      && !/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])
+      && !/^\s*>\s?/.test(lines[i])
+      && !/^\s*[-*+]\s+/.test(lines[i])
+      && !/^\s*\d+\.\s+/.test(lines[i])
+      && !(lines[i].includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1]))
+    ) {
+      paraLines.push(lines[i]);
+      i += 1;
+    }
+    const p = document.createElement("p");
+    paraLines.forEach((paraLine, idx) => {
+      if (idx > 0) p.append(document.createElement("br"));
+      appendInlineMarkdown(p, paraLine);
+    });
+    container.append(p);
+  }
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function splitTableRow(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function appendInlineMarkdown(parent, text) {
+  const pattern = /`([^`\n]+)`|\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)|\*\*([^*\n]+)\*\*|~~([^~\n]+)~~|\*([^*\n]+)\*/g;
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > last) parent.append(document.createTextNode(text.slice(last, match.index)));
+    if (match[1] !== undefined) {
+      parent.append(node("code", "", match[1]));
+    } else if (match[2] !== undefined && match[3] !== undefined) {
+      const a = document.createElement("a");
+      a.href = match[3];
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = match[2];
+      parent.append(a);
+    } else if (match[4] !== undefined) {
+      const strong = document.createElement("strong");
+      appendInlineMarkdown(strong, match[4]);
+      parent.append(strong);
+    } else if (match[5] !== undefined) {
+      const del = document.createElement("del");
+      appendInlineMarkdown(del, match[5]);
+      parent.append(del);
+    } else if (match[6] !== undefined) {
+      const em = document.createElement("em");
+      appendInlineMarkdown(em, match[6]);
+      parent.append(em);
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parent.append(document.createTextNode(text.slice(last)));
 }
 
 function renderApproval() {

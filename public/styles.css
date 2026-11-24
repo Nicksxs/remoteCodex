@@ -157,9 +157,27 @@ input, textarea, select { font-size: 16px; }
 .message.agent .message-label { margin-bottom: 8px; color: var(--accent); font: 730 10px ui-monospace, monospace; letter-spacing: .12em; }
 .message-text { overflow-wrap: anywhere; }
 .message-text p { margin: 0 0 12px; }
-.message-text p:last-child { margin-bottom: 0; }
-.message-text pre { max-width: 100%; overflow-x: auto; padding: 13px; border: 1px solid var(--line); border-radius: 13px; background: #080a08; color: #dde7d8; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; -webkit-overflow-scrolling: touch; }
-.message-text code { color: #ddf7a7; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.message-text p:last-child, .message-text ul:last-child, .message-text ol:last-child, .message-text blockquote:last-child, .message-text pre:last-child, .message-text .table-wrap:last-child { margin-bottom: 0; }
+.message-text h1, .message-text h2, .message-text h3, .message-text h4 { margin: 16px 0 8px; line-height: 1.3; letter-spacing: -.02em; color: var(--text); }
+.message-text h1:first-child, .message-text h2:first-child, .message-text h3:first-child, .message-text h4:first-child { margin-top: 0; }
+.message-text h1 { font-size: 20px; }
+.message-text h2 { font-size: 17px; }
+.message-text h3 { font-size: 15px; }
+.message-text h4 { font-size: 14px; color: #d5e2ce; }
+.message-text ul, .message-text ol { margin: 0 0 12px; padding-left: 20px; }
+.message-text li { margin: 4px 0; }
+.message-text blockquote { margin: 0 0 12px; padding: 6px 12px; border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0; background: rgba(201, 245, 111, .05); color: #cfd8cb; }
+.message-text hr { margin: 14px 0; border: 0; border-top: 1px solid var(--line); }
+.message-text strong { color: #ffffff; font-weight: 700; }
+.message-text a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.message-text pre { max-width: 100%; overflow-x: auto; margin: 0 0 12px; padding: 13px; border: 1px solid var(--line); border-radius: 13px; background: #080a08; color: #dde7d8; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; -webkit-overflow-scrolling: touch; }
+.message-text code { padding: 1px 5px; border-radius: 6px; background: rgba(201, 245, 111, .09); color: #ddf7a7; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+.message-text pre code { padding: 0; border-radius: 0; background: transparent; font-size: inherit; }
+.message-text .table-wrap { max-width: 100%; overflow-x: auto; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 12px; -webkit-overflow-scrolling: touch; }
+.message-text table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.message-text th, .message-text td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.message-text th { background: var(--surface-2); color: var(--text); font-weight: 650; }
+.message-text tr:last-child td { border-bottom: 0; }
 .activity-card { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 .activity-card summary { min-height: 48px; padding: 11px 13px; display: flex; align-items: center; gap: 9px; list-style: none; color: #cbd4c7; font-size: 13px; }
 .activity-card summary::-webkit-details-marker { display: none; }
