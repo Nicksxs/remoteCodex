@@ -27,6 +27,7 @@ const state = {
   listRequestByProvider: { codex: 0, antigravity: 0 },
   models: [], current: null, writerLocked: false, subscribedCodexThreadId: null,
   items: new Map(), itemOrder: [], pending: new Map(), activeTurnId: null, busy: false,
+  questionDrafts: new Map(),
   selectedEffort: "", eventAbort: null, reconnectTimer: null,
   eventTransport: "sse", eventCursor: 0, eventSession: null,
   finishedTurnId: null, sending: false, opening: false, pendingRevision: 0,
@@ -625,13 +626,26 @@ async function forkLockedCodexThread(threadId) {
 async function sendPrompt() {
   const text = els.prompt.value.trim();
   if (!text || els.send.disabled) return;
-  if (!state.current) return openNewThread();
+  const sent = await submitPromptText(text);
+  if (sent) {
+    els.prompt.value = "";
+    resizePrompt();
+  }
+}
+
+async function submitPromptText(text) {
+  const value = String(text || "").trim();
+  if (!value || els.send.disabled) return false;
+  if (!state.current) {
+    openNewThread();
+    return false;
+  }
   state.sending = true;
   updateSendButton();
   const provider = state.current.provider || "codex";
   let threadId = state.current.id;
   try {
-    const input = [{ type: "text", text }];
+    const input = [{ type: "text", text: value }];
     if (provider === "codex" && state.busy && state.activeTurnId) {
       await rpc("turn/steer", { threadId, input, expectedTurnId: state.activeTurnId }, "codex");
       toast("已插入当前任务");
@@ -660,10 +674,10 @@ async function sendPrompt() {
         setBusy(true);
       }
     }
-    els.prompt.value = "";
-    resizePrompt();
+    return true;
   } catch (error) {
     toast(error.message);
+    return false;
   } finally {
     state.sending = false;
     updateSendButton();
@@ -794,10 +808,14 @@ function itemElement(item) {
     return activity(`文件修改 · ${statusLabel(item.status)}`, changes);
   }
   if (item.type === "mcpToolCall") return activity(`工具 · ${item.server || "MCP"}/${item.tool || ""}`, pretty(item.result || item.error || item.arguments || ""), item.status === "failed");
-  if (item.type === "antigravityTool") return activity(
-    `工具 · ${item.details.title || item.details.kind || "Antigravity"} · ${statusLabel(item.status)}`,
-    pretty(item.details), item.status === "failed",
-  );
+  if (item.type === "antigravityTool") {
+    const questions = extractAskQuestions(item);
+    if (questions.length) return askQuestionCard(item, questions);
+    return activity(
+      `工具 · ${item.details.title || item.details.kind || "Antigravity"} · ${statusLabel(item.status)}`,
+      pretty(item.details), item.status === "failed",
+    );
+  }
   if (item.type === "collabAgentToolCall" || item.type === "subAgentActivity") return activity("子任务", pretty(item));
   if (item.type === "webSearch") return activity("网络搜索", item.query || pretty(item));
   return null;
@@ -808,6 +826,107 @@ function activity(label, body, failed = false) {
   details.append(node("summary", "", label));
   details.append(node("div", "activity-body", body || "进行中…"));
   return details;
+}
+
+function extractAskQuestions(item) {
+  const details = item?.details || {};
+  const isAsk = details.name === "ask_question" || details.title === "Run ask_question" || details.title === "ask_question";
+  const raw = details.rawInput?.questions;
+  if (!isAsk && !raw) return [];
+  let list = raw;
+  if (typeof list === "string") {
+    try { list = JSON.parse(list); } catch { return []; }
+  }
+  return Array.isArray(list) ? list.filter((q) => q && typeof q.question === "string") : [];
+}
+
+function isAwaitingQuestionAnswer(itemId) {
+  const index = state.itemOrder.indexOf(itemId);
+  if (index < 0) return false;
+  for (let i = index + 1; i < state.itemOrder.length; i += 1) {
+    if (state.items.get(state.itemOrder[i])?.type === "userMessage") return false;
+  }
+  return true;
+}
+
+function askQuestionCard(item, questions) {
+  if (!isAwaitingQuestionAnswer(item.id)) {
+    const summary = questions.map((q, idx) => `${idx + 1}. ${q.question}`).join("\n");
+    return activity(`问题 · 已回答（${questions.length} 题）`, summary);
+  }
+
+  const card = node("section", "question-card");
+  card.append(node("p", "eyebrow", "ANTIGRAVITY QUESTION"));
+  card.append(node("h3", "question-card-title", questions.length > 1 ? `请回答以下 ${questions.length} 个问题` : "需要你的确认"));
+
+  const form = document.createElement("form");
+  const draft = state.questionDrafts.get(item.id) || { selected: {}, custom: {} };
+  state.questionDrafts.set(item.id, draft);
+
+  questions.forEach((q, qIdx) => {
+    const group = node("div", "question");
+    const title = questions.length > 1 ? `${qIdx + 1}. ${q.question}` : q.question;
+    group.append(node("strong", "", `${title}${q.is_multi_select ? "（可多选）" : ""}`));
+    const chosen = new Set(draft.selected[qIdx] || []);
+    const inputType = q.is_multi_select ? "checkbox" : "radio";
+    for (const optText of q.options || []) {
+      const label = node("label", "option");
+      const input = document.createElement("input");
+      input.type = inputType;
+      input.name = `aq-${item.id}-${qIdx}`;
+      input.value = optText;
+      input.checked = chosen.has(optText);
+      input.addEventListener("change", () => {
+        if (q.is_multi_select) {
+          if (input.checked) chosen.add(optText);
+          else chosen.delete(optText);
+          draft.selected[qIdx] = [...chosen];
+        } else {
+          draft.selected[qIdx] = [optText];
+        }
+      });
+      label.append(input, document.createTextNode(optText));
+      group.append(label);
+    }
+    const customInput = node("input", "field question-other");
+    customInput.type = "text";
+    customInput.placeholder = "其他补充（可选）";
+    customInput.value = draft.custom[qIdx] || "";
+    customInput.addEventListener("input", () => {
+      draft.custom[qIdx] = customInput.value;
+    });
+    group.append(customInput);
+    form.append(group);
+  });
+
+  const submitBtn = node("button", "primary-button full", "提交回答");
+  submitBtn.type = "submit";
+  submitBtn.disabled = state.sending || state.busy;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const lines = [];
+    for (let qIdx = 0; qIdx < questions.length; qIdx += 1) {
+      const q = questions[qIdx];
+      const picks = [...(draft.selected[qIdx] || [])];
+      const extra = (draft.custom[qIdx] || "").trim();
+      if (extra) picks.push(extra);
+      if (!picks.length) return toast(`请先选择或填写：${q.question}`);
+      if (questions.length === 1) lines.push(picks.join("；"));
+      else lines.push(`${qIdx + 1}. ${q.question}\n答：${picks.join("；")}`);
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = "正在提交…";
+    const ok = await submitPromptText(lines.join("\n\n"));
+    if (ok) {
+      state.questionDrafts.delete(item.id);
+    } else {
+      submitBtn.disabled = state.sending || state.busy;
+      submitBtn.textContent = "提交回答";
+    }
+  });
+  form.append(submitBtn);
+  card.append(form);
+  return card;
 }
 
 function renderRichText(container, text) {
@@ -1140,7 +1259,11 @@ function setBusy(value) {
 }
 
 function updateSendButton() {
-  els.send.disabled = state.sending || state.opening || (isCurrentAntigravity() && state.busy);
+  const disabled = state.sending || state.opening || (isCurrentAntigravity() && state.busy);
+  els.send.disabled = disabled;
+  els.messageList.querySelectorAll(".question-card button[type='submit']").forEach((button) => {
+    button.disabled = disabled;
+  });
 }
 
 function updateConnectionUi() {

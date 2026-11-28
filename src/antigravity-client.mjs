@@ -397,10 +397,23 @@ function snapshot(session, includeTurns = false) {
   };
 }
 
-function toolDetails({ title, name, kind, rawInput, locations, content }) {
+function toolDetails({ title, name, kind, rawInput, args, locations, content }) {
+  const input = normalizeToolInput(name, rawInput ?? args);
   return Object.fromEntries(
-    Object.entries({ title: title ?? name, kind, rawInput, locations, content }).filter(([, value]) => value != null),
+    Object.entries({ title: title ?? name, name, kind, rawInput: input, locations, content }).filter(([, value]) => value != null),
   );
+}
+
+function normalizeToolInput(name, rawInput) {
+  if (!rawInput || typeof rawInput !== "object") return rawInput;
+  if (name === "ask_question" && typeof rawInput.questions === "string") {
+    try {
+      return { ...rawInput, questions: JSON.parse(rawInput.questions) };
+    } catch {
+      return rawInput;
+    }
+  }
+  return rawInput;
 }
 
 function contentPart(content) {
@@ -464,13 +477,13 @@ async function loadLocalTranscript(sessionId) {
       }
       if (Array.isArray(step.tool_calls)) {
         step.tool_calls.forEach((call, callIndex) => {
-          const title = call?.name || call?.function?.name || "工具调用";
+          const name = call?.name || call?.function?.name || "工具调用";
           const rawInput = call?.args ?? call?.arguments ?? call?.function?.arguments;
           items.push({
             id: `transcript:${stepId}:tool:${callIndex}`,
             type: "antigravityTool",
             status: "completed",
-            details: toolDetails({ title, rawInput }),
+            details: toolDetails({ title: name, name, rawInput }),
           });
         });
       }
